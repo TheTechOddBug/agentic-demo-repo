@@ -24,11 +24,6 @@ EOF
 ```
 
 ```
-export INGRESS_GW_ADDRESS=$(kubectl get svc -n agentgateway-system agentgateway-route -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
-echo $INGRESS_GW_ADDRESS
-```
-
-```
 kubectl apply -f- <<EOF
 apiVersion: v1
 kind: Secret
@@ -92,6 +87,11 @@ spec:
       group: agentgateway.dev
       kind: AgentgatewayBackend
 EOF
+```
+
+```
+export INGRESS_GW_ADDRESS=$(kubectl get svc -n agentgateway-system agentgateway-route -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+echo $INGRESS_GW_ADDRESS
 ```
 
 ```

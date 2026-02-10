@@ -51,7 +51,7 @@ spec:
   ai:
     provider:
         anthropic:
-          model: "claude-sonnet-4-5-20250929"
+          model: "claude-haiku-4-5-20251001"
   policies:
     ai:
       routes:
@@ -106,7 +106,7 @@ You will get a successful response
 
 ## Prompt Guard
 
-Re-apply the agentgatewaybackend except this time, you'll see the `promptGuard` parameter.
+1. Re-apply the agentgatewaybackend except this time, you'll see the `promptGuard` parameter.
 
 ```
 kubectl apply -f- <<EOF
@@ -121,7 +121,7 @@ spec:
   ai:
     provider:
         anthropic:
-          model: "claude-sonnet-4-5-20250929"
+          model: "claude-opus-4-6"
   policies:
     ai:
       routes:
@@ -145,4 +145,45 @@ EOF
 
 ```
 ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"
+```
+
+
+**Known Issue On Claudes End**
+
+There is an issue where if you're in prompt mode (without using `-p "What is a credit card"` and instead just use `ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude`, the 403 will keep popping up. We looked into this and that's on Claudes end. We can't invalidate the session once its started. Claude shouldn't re-send the 403 (might be a good bug ticket to put in with them), but we have no way to control that. The only way to clear that is with a new session/prompt.
+
+WORKS:
+`ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"`
+
+Doesn't work:
+`ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude`
+
+
+
+
+```
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: credit-guard-prompt-guard
+  namespace: agentgateway-system
+  labels:
+    app: agentgateway-route
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: claude
+  backend:
+    ai:
+      promptGuard:
+        request:
+        - response:
+            message: "Rejected due to inappropriate content"
+          regex:
+            action: Reject
+            matches:
+            - "credit card"
+EOF
 ```

@@ -160,7 +160,7 @@ metadata:
   namespace: agentgateway-system
 spec:
   static:
-    host: http://myhost.com
+    host: HOSTNAME_OR_IPADDRESS
     port: 11434
   policies:
     auth:

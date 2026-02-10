@@ -5,7 +5,7 @@ variable "aws_region" {
 
 variable "cluster_name" {
   description = "The name of the EKS cluster."
-  default     = "bedrocktest"
+  default     = "promptest"
 }
 
 variable "cluster_version" {

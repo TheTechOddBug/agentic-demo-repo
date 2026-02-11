@@ -1,0 +1,16 @@
+{"type":"Metric","data":{"name":"vus","type":"gauge","contains":"default","thresholds":[],"submetrics":null},"metric":"vus"}
+{"metric":"vus","type":"Point","data":{"time":"2026-02-11T12:28:54.7383-05:00","value":1,"tags":{}}}
+{"type":"Metric","data":{"name":"vus_max","type":"gauge","contains":"default","thresholds":[],"submetrics":null},"metric":"vus_max"}
+{"metric":"vus_max","type":"Point","data":{"time":"2026-02-11T12:28:54.7383-05:00","value":10,"tags":{}}}
+{"metric":"vus","type":"Point","data":{"time":"2026-02-11T12:28:55.737931-05:00","value":1,"tags":{}}}
+{"metric":"vus_max","type":"Point","data":{"time":"2026-02-11T12:28:55.737931-05:00","value":10,"tags":{}}}
+{"metric":"vus","type":"Point","data":{"time":"2026-02-11T12:28:56.73825-05:00","value":1,"tags":{}}}
+{"metric":"vus_max","type":"Point","data":{"time":"2026-02-11T12:28:56.73825-05:00","value":10,"tags":{}}}
+{"metric":"vus","type":"Point","data":{"time":"2026-02-11T12:28:57.737797-05:00","value":1,"tags":{}}}
+{"metric":"vus_max","type":"Point","data":{"time":"2026-02-11T12:28:57.737797-05:00","value":10,"tags":{}}}
+{"metric":"vus","type":"Point","data":{"time":"2026-02-11T12:28:58.73762-05:00","value":1,"tags":{}}}
+{"metric":"vus_max","type":"Point","data":{"time":"2026-02-11T12:28:58.73762-05:00","value":10,"tags":{}}}
+{"type":"Metric","data":{"name":"data_sent","type":"counter","contains":"data","thresholds":[],"submetrics":null},"metric":"data_sent"}
+{"metric":"data_sent","type":"Point","data":{"time":"2026-02-11T12:28:59.499078-05:00","value":285,"tags":{"group":"","scenario":"default"}}}
+{"type":"Metric","data":{"name":"data_received","type":"counter","contains":"data","thresholds":[],"submetrics":null},"metric":"data_received"}
+{"metric":"data_received","type":"Point","data":{"time":"2026-02-11T12:28:59.499078-05:00","value":0,"tags":{"group":"","scenario":"default"}}}

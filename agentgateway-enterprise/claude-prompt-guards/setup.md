@@ -56,7 +56,7 @@ spec:
   ai:
     provider:
         anthropic:
-          model: "claude-haiku-4-5-20251001"
+          model: "claude-opus-4-6"
   policies:
     ai:
       routes:
@@ -65,6 +65,31 @@ spec:
     auth:
       secretRef:
         name: anthropic-secret
+EOF
+```
+
+OR without a Model:
+```
+kubectl apply -f - <<EOF
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  labels:
+    app: agentgateway-route
+  name: anthropic
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      anthropic: {}
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret
+    ai:
+      routes:
+        '/v1/messages': Messages
+        '*': Passthrough
 EOF
 ```
 
@@ -104,10 +129,13 @@ echo $INGRESS_GW_ADDRESS
 ```
 
 ```
-ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"
+ANTHROPIC_BASE_URL="http://127.0.0.1:8080" claude -p "What is a credit card"
 ```
 
-ANTHROPIC_BASE_URL="http://34.23.145.116:8080" claude -p "What is a credit card"
+OR
+```
+ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS$:8080" claude -p "What is a credit card"
+```
 
 You will get a successful response
 
@@ -148,6 +176,39 @@ spec:
 EOF
 ```
 
+OR without a Model:
+```
+kubectl apply -f - <<EOF
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  labels:
+    app: agentgateway-route
+  name: anthropic
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      anthropic: {}
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret
+    ai:
+      routes:
+        '/v1/messages': Messages
+        '*': Passthrough
+      promptGuard:
+        request:
+        - regex:
+            action: Reject
+            matches:
+              - "credit card"
+          response:
+            message: 'Request blocked: Sensitive infomation detected, please restart your session.
+EOF
+```
+
 2. Run the check again:
 
 ```
@@ -164,33 +225,3 @@ WORKS:
 
 Doesn't work:
 `ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude`
-
-
-
-
-```
-kubectl apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: credit-guard-prompt-guard
-  namespace: agentgateway-system
-  labels:
-    app: agentgateway-route
-spec:
-  targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: claude
-  backend:
-    ai:
-      promptGuard:
-        request:
-        - response:
-            message: "Rejected due to inappropriate content"
-          regex:
-            action: Reject
-            matches:
-            - "credit card"
-EOF
-```

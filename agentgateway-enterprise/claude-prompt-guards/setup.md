@@ -13,6 +13,11 @@ metadata:
     app: agentgateway
 spec:
   gatewayClassName: enterprise-agentgateway
+  infrastructure:
+    parametersRef:
+      name: tracing
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayParameters
   listeners:
   - protocol: HTTP
     port: 8080
@@ -101,6 +106,8 @@ echo $INGRESS_GW_ADDRESS
 ```
 ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"
 ```
+
+ANTHROPIC_BASE_URL="http://34.23.145.116:8080" claude -p "What is a credit card"
 
 You will get a successful response
 

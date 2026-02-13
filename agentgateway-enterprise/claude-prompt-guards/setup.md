@@ -200,12 +200,12 @@ spec:
         '*': Passthrough
       promptGuard:
         request:
-        - regex:
+        - response:
+            message: "Rejected due to inappropriate content"
+          regex:
             action: Reject
             matches:
-              - "credit card"
-          response:
-            message: 'Request blocked: Sensitive infomation detected, please restart your session.
+            - "credit card"
 EOF
 ```
 

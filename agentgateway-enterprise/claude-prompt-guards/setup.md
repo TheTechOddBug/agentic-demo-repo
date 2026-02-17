@@ -214,14 +214,3 @@ EOF
 ```
 ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"
 ```
-
-
-**Known Issue On Claudes End**
-
-There is an issue where if you're in prompt mode (without using `-p "What is a credit card"` and instead just use `ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude`, the 403 will keep popping up. We looked into this and that's on Claudes end. We can't invalidate the session once its started. Claude shouldn't re-send the 403 (might be a good bug ticket to put in with them), but we have no way to control that. The only way to clear that is with a new session/prompt.
-
-WORKS:
-`ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude -p "What is a credit card"`
-
-Doesn't work:
-`ANTHROPIC_BASE_URL="http://$INGRESS_GW_ADDRESS:8080" claude`

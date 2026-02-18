@@ -18,17 +18,12 @@ kubectl apply -f- <<EOF
 kind: Gateway
 apiVersion: gateway.networking.k8s.io/v1
 metadata:
-  name: agentgateway
-  namespace: gloo-system
+  name: agentgateway-route
+  namespace: agentgateway-system
   labels:
     app: agentgateway
 spec:
-  gatewayClassName: agentgateway-enterprise
-  infrastructure:
-    parametersRef:
-      name: tracing
-      group: gloo.solo.io
-      kind: GlooGatewayParameters
+  gatewayClassName: enterprise-agentgateway
   listeners:
   - protocol: HTTP
     port: 8080
@@ -52,9 +47,9 @@ apiVersion: v1
 kind: Secret
 metadata:
   name: anthropic-secret
-  namespace: kgateway-system
+  namespace: agentgateway-system
   labels:
-    app: agentgateway
+    app: agentgateway-route
 type: Opaque
 stringData:
   Authorization: $ANTHROPIC_API_KEY
@@ -66,23 +61,22 @@ EOF
 A Backend resource to define a backing destination that you want kgateway to route to. In this case, it's Claude.
 ```
 kubectl apply -f- <<EOF
-apiVersion: gateway.kgateway.dev/v1alpha1
-kind: Backend
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
 metadata:
   labels:
-    app: agentgateway
+    app: agentgateway-route
   name: anthropic
-  namespace: gloo-system
+  namespace: agentgateway-system
 spec:
-  type: AI
   ai:
-    llm:
+    provider:
         anthropic:
-          authToken:
-            kind: SecretRef
-            secretRef:
-              name: anthropic-secret
-          model: "claude-3-5-haiku-latest"
+          model: "claude-sonnet-4-5-20250929"
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret
 EOF
 ```
 
@@ -98,13 +92,13 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: claude
-  namespace: gloo-system
+  namespace: agentgateway-system
   labels:
-    app: agentgateway
+    app: agentgateway-route
 spec:
   parentRefs:
-    - name: agentgateway
-      namespace: gloo-system
+    - name: agentgateway-route
+      namespace: agentgateway-system
   rules:
   - matches:
     - path:
@@ -118,15 +112,15 @@ spec:
           replaceFullPath: /v1/chat/completions
     backendRefs:
     - name: anthropic
-      namespace: kgateway-system
-      group: gateway.kgateway.dev
-      kind: Backend
+      namespace: agentgateway-system
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
 EOF
 ```
 
 8. Test the LLM connectivity
 ```
-curl "$INGRESS_GW_ADDRESS:8080/anthropic" -H content-type:application/json -H x-api-key:$ANTHROPIC_API_KEY -H "anthropic-version: 2023-06-01" -d '{
+curl "$INGRESS_GW_ADDRESS:8080/anthropic" -H content-type:application/json -H "anthropic-version: 2023-06-01" -d '{
   "messages": [
     {
       "role": "system",
@@ -203,11 +197,11 @@ EOF
 2. Create the Backend
 ```
 kubectl apply -f- <<EOF
-apiVersion: gateway.kgateway.dev/v1alpha1
-kind: Backend
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
 metadata:
   name: mcp-backend
-  namespace: kgateway-system
+  namespace: agentgateway-system
 spec:
   type: MCP
   mcp:
@@ -227,15 +221,15 @@ apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
   name: mcp-route
-  namespace: kgateway-system
+  namespace: agentgateway-system
 spec:
   parentRefs:
   - name: agentgateway
   rules:
   - backendRefs:
     - name: mcp-backend
-      group: gateway.kgateway.dev
-      kind: Backend
+      group: agentgateway.dev
+      kind: AgentgatewayBackend
 EOF
 ```
 

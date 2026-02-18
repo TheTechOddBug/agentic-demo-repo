@@ -27,7 +27,7 @@ kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80
 ```
 
 Username: admin
-Password: prom-operator
+Password: `kubectl get secret kube-prometheus-stack-grafana -n monitoring -o jsonpath='{.data.admin-password}' | base64 --decode`
 
 ## Access Alertmanager UI
 

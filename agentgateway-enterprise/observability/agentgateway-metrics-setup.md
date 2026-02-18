@@ -25,7 +25,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      gateway.networking.k8s.io/gateway-class-name: agentgateway
+      gateway.networking.k8s.io/gateway-class-name: enterprise-agentgateway
   podMetricsEndpoints:
   - port: metrics
     path: /metrics

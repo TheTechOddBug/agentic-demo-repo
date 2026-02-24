@@ -19,7 +19,7 @@ spec:
         #              your authentication/identity layer injects into the request. You don't 
         #              pick it arbitrarily. Its determined by your upstream auth system.
         - "request.headers['x-user-group'] == 'developer'"
-        - "request.headers['x-llm'] == 'gemini'"
+        - "request.headers['x-llm'] == 'azureopenai'"
 EOF
 ```
 

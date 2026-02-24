@@ -178,7 +178,7 @@ metadata:
   labels:
     app: mcp-math-server
 spec:
-  gatewayClassName: agentgateway
+  gatewayClassName: enterprise-agentgateway
   listeners:
     - name: mcp
       port: 3000
@@ -239,7 +239,7 @@ echo $GATEWAY_IP
 
 5. Open MCP Inspector
 ```
-npx modelcontextprotocol/inspector#0.16.2
+npx modelcontextprotocol/inspector#0.18.0
 ```
 
 6. Specify, within the **URL** section, the following:

@@ -1,0 +1,27 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agentgateway
+  namespace: monitoring
+  labels:
+    app: agentgateway-route
+    release: kube-prometheus-stack
+spec:
+  selector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-class-name: enterprise-agentgateway
+  namespaceSelector:
+    matchNames:
+      - agentgateway-system
+  podMetricsEndpoints:
+  - port: metrics
+    path: /metrics
+    interval: 30s
+    scrapeTimeout: 10s
+    relabelings:
+      - sourceLabels: [__meta_kubernetes_pod_name]
+        targetLabel: pod
+      - sourceLabels: [__meta_kubernetes_namespace]
+        targetLabel: namespace
+      - sourceLabels: [__meta_kubernetes_pod_name]
+        targetLabel: gateway_instance

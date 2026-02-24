@@ -24,7 +24,7 @@ EOF
 ```
 
 ```
-  curl -X POST "http://$GATEWAY_IP:8080/post" \
+  curl -X POST "http://$INGRESS_GW_ADDRESS:8080/azureopenai \
     -H "Content-Type: application/json" \
     -H "x-user-group: developer" \
     -d '{"model":"gemini/gemini-2.0-flash","messages":[{"role":"user","content":"Hello"}]}'

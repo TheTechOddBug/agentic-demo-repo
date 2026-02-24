@@ -1,5 +1,5 @@
 ```
-export ANTHROPIC_API_KEY=
+export AZURE_FOUNDRY_API_KEY=
 ```
 
 ```
@@ -7,15 +7,15 @@ kubectl apply -f- <<EOF
 kind: Gateway
 apiVersion: gateway.networking.k8s.io/v1
 metadata:
-  name: agentgateway-route
+  name: agentgateway-azureopenai-route
   namespace: agentgateway-system
   labels:
-    app: agentgateway
+    app: agentgateway-azureopenai-route
 spec:
   gatewayClassName: enterprise-agentgateway
   listeners:
   - protocol: HTTP
-    port: 8080
+    port: 8081
     name: http
     allowedRoutes:
       namespaces:
@@ -24,7 +24,7 @@ EOF
 ```
 
 ```
-export INGRESS_GW_ADDRESS=$(kubectl get svc -n agentgateway-system agentgateway-route -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+export INGRESS_GW_ADDRESS=$(kubectl get svc -n agentgateway-system agentgateway-azureopenai-route -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
 echo $INGRESS_GW_ADDRESS
 ```
 
@@ -33,13 +33,13 @@ kubectl apply -f- <<EOF
 apiVersion: v1
 kind: Secret
 metadata:
-  name: anthropic-secret
+  name: azureopenai-secret
   namespace: agentgateway-system
   labels:
-    app: agentgateway-route
+    app: agentgateway-azureopenai-route
 type: Opaque
 stringData:
-  Authorization: $ANTHROPIC_API_KEY
+  Authorization: $AZURE_FOUNDRY_API_KEY
 EOF
 ```
 
@@ -49,18 +49,20 @@ apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
   labels:
-    app: agentgateway-route
-  name: anthropic
+    app: agentgateway-azureopenai-route
+  name: azureopenai
   namespace: agentgateway-system
 spec:
   ai:
     provider:
-        anthropic:
-          model: "claude-sonnet-4-5-20250929"
+      azureopenai:
+        endpoint: tmotesting-resource.services.ai.azure.com
+        deploymentName: gpt-5-mini
+        apiVersion: 2025-01-01-preview
   policies:
     auth:
       secretRef:
-        name: anthropic-secret
+        name: azureopenai-secret
 EOF
 ```
 
@@ -73,19 +75,19 @@ kubectl apply -f- <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: claude
+  name: azureopenai
   namespace: agentgateway-system
   labels:
-    app: agentgateway-route
+    app: agentgateway-azureopenai-route
 spec:
   parentRefs:
-    - name: agentgateway-route
+    - name: agentgateway-azureopenai-route
       namespace: agentgateway-system
   rules:
   - matches:
     - path:
         type: PathPrefix
-        value: /anthropic
+        value: /azureopenai
     filters:
     - type: URLRewrite
       urlRewrite:
@@ -93,7 +95,7 @@ spec:
           type: ReplaceFullPath
           replaceFullPath: /v1/chat/completions
     backendRefs:
-    - name: anthropic
+    - name: azureopenai
       namespace: agentgateway-system
       group: agentgateway.dev
       kind: AgentgatewayBackend
@@ -101,7 +103,7 @@ EOF
 ```
 
 ```
-curl "$INGRESS_GW_ADDRESS:8080/anthropic" -H content-type:application/json -H "anthropic-version: 2023-06-01" -d '{
+curl "$INGRESS_GW_ADDRESS:8081/azureopenai" -v -H content-type:application/json -d '{
   "messages": [
     {
       "role": "system",
@@ -114,3 +116,5 @@ curl "$INGRESS_GW_ADDRESS:8080/anthropic" -H content-type:application/json -H "a
   ]
 }' | jq
 ```
+
+![](../images/azureopen-curl-test.png)

@@ -251,7 +251,7 @@ Agentgateway’s CEL-based auth can evaluate request attributes. Agentgateway pr
 Please note, this is more coarse-grained than fine-grained, but it's a good RBAC primitive to have if you have any workflows that require the standard roles/permissions approach.
 
 Example:
-```
+```yaml
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayPolicy
 metadata:

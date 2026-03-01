@@ -1,6 +1,6 @@
 # ABAC With Agentgateway
 
-agentgateway has multiple methods of implementing and helping with ABAC. The goal of this "doc" (which will hopefully turn into a real doc), is to be a living doc that as we go, we can add what works with agetngateway for ABAC.
+agentgateway has multiple methods of implementing and helping with Attribute-Based Access Control (ABAC). The goal of this "doc" (which will hopefully turn into a real doc), is to be a living doc that as we go, we can add what works with agetngateway for ABAC.
 
 ## Implementations
 
@@ -26,6 +26,74 @@ Use guardrails for:
 - jailbreak/injection inspection
 - response redaction or rewriting
 
+Example (ABAC-aware webhook + policy):
+
+```yaml
+# 1) Attach a guardrail webhook to request + response phases
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: openai-prompt-guard
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: openai
+  backend:
+    ai:
+      promptGuard:
+        request:
+        - webhook:
+            backendRef:
+              kind: Service
+              name: ai-guardrail-webhook
+              port: 8000
+        response:
+        - webhook:
+            backendRef:
+              kind: Service
+              name: ai-guardrail-webhook
+              port: 8000
+```
+
+```python
+# 2) Guardrail webhook logic example (attribute-aware ABAC decision)
+#    - Enforce claim- and model-based access
+#    - Optionally call OPA/Kyverno for central policy
+from flask import Flask, request, jsonify
+import requests
+
+app = Flask(__name__)
+OPA_URL = "http://opa.opa.svc.cluster.local:8181/v1/data/agw/allow"
+
+@app.post("/guardrail")
+def guardrail():
+    payload = request.get_json(force=True)
+
+    claims = payload.get("jwt", {})
+    route = payload.get("route", "")
+    model = payload.get("llm", {}).get("model", "")
+    user_text = str(payload.get("requestBody", ""))
+
+    # Local ABAC checks
+    if claims.get("team") != "platform":
+        return jsonify({"decision": "reject", "message": "team is not allowed"}), 403
+    if route == "openai-admin" and claims.get("role") != "admin":
+        return jsonify({"decision": "reject", "message": "admin route requires admin role"}), 403
+    if model.startswith("gpt-4") and claims.get("tier") not in ["pro", "enterprise"]:
+        return jsonify({"decision": "reject", "message": "model not allowed for plan"}), 403
+
+    # Optional external policy call
+    opa = requests.post(OPA_URL, json={"input": payload}, timeout=0.3)
+    if not opa.ok or not opa.json().get("result", False):
+        return jsonify({"decision": "reject", "message": "denied by OPA"}), 403
+
+    # Example content rewrite
+    rewritten = user_text.replace("ssn", "***")
+    return jsonify({"decision": "allow", "requestBody": rewritten}), 200
+```
+
 
 2. MCP Server Tool Access
 
@@ -41,6 +109,31 @@ mcp.tool.name == "add_issue_comment"
 jwt.sub == "alice" && mcp.tool.name == "add_issue_comment"
 ```
 
+Example (tool-level ABAC):
+
+```yaml
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: mcp-tool-access
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: agentgateway.dev
+      kind: AgentgatewayBackend
+      name: github-mcp-backend
+  backend:
+    mcp:
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+            # Only alice can see/use get_me
+            - 'jwt.sub == "alice" && mcp.tool.name == "get_me"'
+            # Example: ops team can use incident tools
+            - 'jwt.team == "ops" && mcp.tool.name.startsWith("incident_")'
+```
+
 
 3. BYO Policy Enforcement
 
@@ -52,10 +145,101 @@ https://docs.solo.io/agentgateway/2.1.x/security/extauth/byo-ext-auth-service/
 
 Sidenote: For attribute enrichment, ExtProc is useful when the attributes are not already present as headers/claims. The docs say ExtProc can read and modify headers, body, and trailers, and can terminate the request.
 
+Example (external auth service + gateway policy):
+
+```yaml
+# External auth policy on the Gateway
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  namespace: agentgateway-system
+  name: gateway-ext-auth-policy
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: agentgateway-proxy
+  traffic:
+    extAuth:
+      backendRef:
+        name: ext-authz
+        namespace: agentgateway-system
+        port: 4444
+      grpc: {}
+```
+
+```rego
+# OPA policy example your ext-auth service can evaluate
+package agw.authz
+
+default allow = false
+
+allow if {
+  input.jwt.claims.org == "acme"
+  input.jwt.claims.project == "payments"
+  input.request.path == "/openai"
+  input.request.headers["x-llm"] == "gpt-4o-mini"
+}
+```
+
 
 4. Token Exchange
 
 On-Behalf-Of/Elicitation. This feeds ABAC because the exchanged tokens carry scoped claims/attributes that downstream policy engines can evaluate.
+
+Example (enable STS token exchange for OBO + enforce STS-issued JWT):
+
+```yaml
+# Helm values (enterprise-agentgateway) to enable OBO token exchange
+tokenExchange:
+  enabled: true
+  issuer: "enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777"
+  tokenExpiration: 24h
+  subjectValidator:
+    validatorType: remote
+    remoteConfig:
+      url: "${KEYCLOAK_JWKS_URI}"
+  actorValidator:
+    validatorType: k8s
+```
+
+```yaml
+# Require STS-issued token on MCP route
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: jwt-policy
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: mcp
+  traffic:
+    jwtAuthentication:
+      mode: Strict
+      providers:
+      - issuer: enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777
+        jwks:
+          inline: '${KEYCLOAK_CERT_KEYS}'
+```
+
+```yaml
+# Elicitation-only mode for upstream OAuth token collection/injection
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: token-exchange-elicit-service
+  namespace: httpbin
+spec:
+  targetRefs:
+    - group: ""
+      kind: Service
+      name: httpbin
+  backend:
+    tokenExchange:
+      mode: ElicitationOnly
+```
 
 5. CEL
 

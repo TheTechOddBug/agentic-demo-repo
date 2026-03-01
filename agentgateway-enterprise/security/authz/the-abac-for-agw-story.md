@@ -2,6 +2,8 @@
 
 agentgateway has multiple methods of implementing and helping with Attribute-Based Access Control (ABAC). The goal of this "doc" (which will hopefully turn into a real doc), is to be a living doc that as we go, we can add what works with agetngateway for ABAC.
 
+For more info on ABAC: https://frontegg.com/guides/abac
+
 ## Implementations
 
 1. Guardrails

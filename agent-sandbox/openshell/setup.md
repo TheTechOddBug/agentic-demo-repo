@@ -15,7 +15,7 @@ Configure OpenShell inference routing to send sandbox model calls to agentgatewa
 
 - Docker Desktop or another Docker-compatible runtime is running for OpenShell.
 - Agentgateway is deployed in Kubernetes.
-- Any provider credentials required by agentgateway are already configured on the agentgateway side, or Agent Gateway accepts the placeholder key shown below.
+- Any provider credentials required by agentgateway are already configured on the agentgateway side, or agentgateway accepts the placeholder key shown below.
 
 On macOS with Docker Desktop, OpenShell may need Docker socket explicitly set:
 
@@ -141,9 +141,9 @@ DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock openshell gateway start
 DOCKER_HOST=unix:///$HOME/.docker/run/docker.sock openshell status
 ```
 
-## Get Agent Gateway address
+## Get Agentgateway address
 
-Receive the Agent Gateway address from the Kubernetes `LoadBalancer` service:
+Receive the agentgateway address from the Kubernetes `LoadBalancer` service:
 
 ```bash
 export GATEWAY_ADDRESS=$(kubectl get svc -n agentgateway-system agentgateway-openshell -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
@@ -156,9 +156,9 @@ If the output is empty, the service does not have an external address yet. Check
 kubectl get svc agentgateway-openshell -n agentgateway-system
 ```
 
-## Verify Agent Gateway OpenAI-compatible endpoint
+## Verify Agentgateway OpenAI-compatible endpoint
 
-OpenShell should point at Agent Gateway's OpenAI-compatible base URL:
+OpenShell should point at Agentgateways OpenAI-compatible base URL:
 
 ```bash
 export AGENTGATEWAY_OPENAI_BASE_URL=http://$GATEWAY_ADDRESS:8080/v1
@@ -253,7 +253,7 @@ openshell inference get
 
 ## Create sandbox
 
-Create a sandbox normally. OpenShell will expose `https://inference.local` inside the sandbox and route supported inference calls through Agent Gateway.
+Create a sandbox normally. OpenShell will expose `https://inference.local` inside the sandbox and route supported inference calls through agentgateway.
 
 ```bash
 openshell sandbox create -- claude

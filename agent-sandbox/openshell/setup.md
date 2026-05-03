@@ -278,3 +278,13 @@ openshell sandbox exec --name social-conger -- curl -sS https://inference.local/
 You should see an output similar to the below:
 
 ![](../images/testawginference.png)
+
+You can check that the traffic went through the gateway by looking at the logs:
+```
+kubectl logs agentgateway-openshell-xxxx -n agentgateway-system
+```
+
+Output example:
+```
+2026-05-03T12:53:30.56091Z      info    request gateway=agentgateway-system/agentgateway-openshell listener=http route=agentgateway-system/openshell-openai endpoint=api.anthropic.com:443 src.addr=10.224.0.33:26111 http.method=POST http.host=20.57.192.210 http.path=/v1/chat/completions http.version=HTTP/1.1 http.status=200 protocol=llm gen_ai.operation.name=chat gen_ai.provider.name=anthropic gen_ai.request.model=claude-sonnet-4-6 gen_ai.response.model=claude-sonnet-4-6 gen_ai.usage.input_tokens=15 gen_ai.usage.cache_read.input_tokens=0 gen_ai.usage.output_tokens=44 duration=1975ms
+```

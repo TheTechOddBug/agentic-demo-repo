@@ -1,4 +1,4 @@
-# OpenShell with Agent Gateway
+# OpenShell with agentgateway
 
 Use this setup when OpenShell should manage the sandbox runtime, while agentgateway handles model traffic.
 

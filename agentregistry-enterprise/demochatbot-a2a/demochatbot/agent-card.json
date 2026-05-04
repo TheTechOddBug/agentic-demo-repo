@@ -2,7 +2,7 @@
   "name": "demochatbot",
   "description": "A deterministic demo chatbot deployed to AWS AgentCore through AgentRegistry Enterprise.",
   "url": "http://localhost:9000",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "capabilities": {
     "streaming": true
   },

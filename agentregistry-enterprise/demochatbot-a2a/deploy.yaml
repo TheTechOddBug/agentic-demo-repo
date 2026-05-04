@@ -9,4 +9,4 @@ spec:
   targetRef:
     kind: Agent
     name: demochatbot
-    version: "1.0.3"
+    version: "1.0.4"

@@ -73,6 +73,13 @@ clickhouse:
 # OTel Collector
 telemetry:
   enabled: true
+
+# Enable tracing — send server traces to the bundled OTel Collector
+extraEnvVars:
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://agentregistry-enterprise-telemetry-collector:4317"
+  - name: OTEL_SERVICE_NAME
+    value: "agentregistry-enterprise"
 EOF
 ```
 
@@ -191,6 +198,8 @@ arctl get providers
 
 > **Important**: The `arctl user login` command requires the **OAuth 2.0 Device Authorization Grant** to be enabled on the Keycloak client. If you see `Client is not allowed to initiate OAuth 2.0 Device Authorization Grant`, enable the device flow in Keycloak:
 > Keycloak Admin > Realm > Clients > your client > Capability config > OAuth 2.0 Device Authorization Grant > ON.
+>
+> The CLI device-code flow must not require PKCE on the `are-cli` client. If login fails with `Missing parameter: code_challenge_method`, clear the `pkce.code.challenge.method` client attribute in Keycloak.
 
 > **Note**: The enterprise `arctl` installs to `$HOME/.arctl/bin/arctl`. If you also have the OSS `arctl` installed (e.g., at `/usr/local/bin/arctl`), make sure the enterprise one takes precedence in your PATH. The OSS CLI does not have `user login`, `apply`, `provider`, or other enterprise commands.
 
@@ -259,7 +268,7 @@ cat > /tmp/aws-provider.yaml <<EOF
 apiVersion: ar.dev/v1alpha1
 kind: Provider
 metadata:
-  name: my-aws
+  name: AWS
 spec:
   platform: aws
   config:
@@ -284,48 +293,52 @@ arctl apply -f /tmp/aws-provider.yaml
 
 Once the AWS provider is registered, you can deploy agents to AWS Bedrock AgentCore.
 
-### Create a Test Agent
+### Use the A2A-Compatible Demo Agent
 
-A minimal echo agent is included in this repo under `demo-agent/`. It has three files:
+AgentRegistry Enterprise deploys AWS agents through the A2A/kagent-adk AgentCore path. Use the `demochatbot-a2a/` example in this repo; it includes the ADK-style agent package, A2A agent card, registry manifest, and deployment manifest:
 
-- `agent.py` — a simple Python agent that echoes back any message it receives (zero dependencies)
-- `agent.yaml` — registers the agent in the AgentRegistry
+- `demochatbot/agent.py` — ADK-compatible agent implementation
+- `demochatbot/agent-card.json` — A2A agent card consumed by the generated AgentCore wrapper
+- `agent.yaml` — registers the agent in AgentRegistry
 - `deploy.yaml` — deploys it to AWS via the registered provider
 
-The agent manifest (`agent.yaml`):
+The agent manifest (`demochatbot-a2a/agent.yaml`):
 
 ```yaml
 apiVersion: ar.dev/v1alpha1
 kind: Agent
 metadata:
-  name: echo-agent
-  version: "1.0.0"
+  name: demochatbot
+  version: "1.0.4"
 spec:
-  description: "A minimal echo agent for testing deployments to AWS Bedrock AgentCore"
+  description: "A deterministic A2A/ADK-compatible chatbot for AWS Bedrock AgentCore"
   source:
-    type: python
-    entrypoint: agent.py
+    repository:
+      url: "https://github.com/AdminTurnedDevOps/agentic-demo-repo"
+      subfolder: "agentregistry-enterprise/demochatbot-a2a"
 ```
 
-The deployment manifest (`deploy.yaml`):
+The deployment manifest (`demochatbot-a2a/deploy.yaml`):
 
 ```yaml
 apiVersion: ar.dev/v1alpha1
 kind: Deployment
 metadata:
-  name: echo-agent
+  name: demochatbot
 spec:
   providerRef:
-    name: AWS          # Must match the name of your registered AWS provider
+    kind: Provider
+    name: AWS
   targetRef:
     kind: Agent
-    name: echo-agent
+    name: demochatbot
+    version: "1.0.4"
 ```
 
 ### Register and Deploy
 
 ```bash
-cd demo-agent/
+cd demochatbot-a2a/
 
 # Register the agent in the registry
 arctl apply -f agent.yaml
@@ -340,21 +353,69 @@ arctl apply -f deploy.yaml
 arctl get deployments
 ```
 
-The deployment will go through `deploying` -> `deployed` (or `failed` with an error message). You can also check deployment logs:
+The deployment will go through `deploying` -> `deployed` (or `failed` with an error message). To inspect the deployment record:
 
 ```bash
-arctl get deployments echo-agent --logs
+arctl get deployment demochatbot -o yaml
 ```
 
-### Clean Up the Deployment
+Runtime logs are written in AWS CloudWatch under the Bedrock AgentCore runtime log group, which follows the pattern `/aws/bedrock-agentcore/runtimes/<runtime-id>-DEFAULT`.
 
-To remove the agent from AWS:
+## 9. Register an MCP Server
+
+You can also register MCP servers in AgentRegistry. A minimal stdio MCP server is included in this repo under `demo-mcp/`.
+
+### MCP Server Files
+
+- `server.py` — a zero-dependency Python MCP server with 3 tools: `get_time`, `random_number`, `reverse_string`
+- `mcpserver.yaml` — registers the MCP server in AgentRegistry
+
+The MCP server manifest (`mcpserver.yaml`):
+
+```yaml
+apiVersion: ar.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: demo-tools
+  version: "1.0.0"
+spec:
+  description: "A minimal MCP server with simple tools: get_time, random_number, reverse_string"
+  transport: stdio
+  command: "python3 server.py"
+  source:
+    repository:
+      url: "https://github.com/AdminTurnedDevOps/agentic-demo-repo"
+      subfolder: "agentregistry-enterprise/demo-mcp"
+  tools:
+    - name: get_time
+      description: "Get the current UTC time"
+    - name: random_number
+      description: "Generate a random number between min and max"
+    - name: reverse_string
+      description: "Reverse a string"
+```
+
+### Register the MCP Server
 
 ```bash
-arctl delete -f deploy.yaml
+cd demo-mcp/
+arctl apply -f mcpserver.yaml
 ```
 
-## 9. Updating AWS Credentials
+### Verify
+
+```bash
+arctl get mcps
+```
+
+You should see:
+
+```
+NAME         VERSION   DESCRIPTION
+demo-tools   1.0.0     A minimal MCP server with simple tools: get_time, random_...
+```
+
+## 10. Updating AWS Credentials
 
 If your AWS credentials change (e.g., key rotation), update the Helm values file and run:
 
@@ -447,6 +508,11 @@ Wait for the external IP:
 ```bash
 export KC_IP=$(kubectl get svc keycloak -n keycloak -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 echo "Keycloak admin: http://$KC_IP:8080 (admin / admin123)"
+
+kubectl set env deployment/keycloak -n keycloak \
+  KC_HOSTNAME_URL=http://$KC_IP:8080 \
+  KC_HOSTNAME_ADMIN_URL=http://$KC_IP:8080
+kubectl rollout status deployment/keycloak -n keycloak
 ```
 
 ### Configure the Realm
@@ -458,6 +524,15 @@ The imported realm includes clients and groups but needs users and additional co
 KC_TOKEN=$(curl -s -X POST "http://$KC_IP:8080/realms/master/protocol/openid-connect/token" \
   -d "grant_type=password" -d "client_id=admin-cli" \
   -d "username=admin" -d "password=admin123" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+
+# For HTTP-only dev installs, allow non-SSL realm cookies.
+# Use HTTPS and keep stricter SSL settings for production installs.
+curl -s -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
+  "http://$KC_IP:8080/admin/realms/master" \
+  -d '{"realm":"master","sslRequired":"none"}'
+curl -s -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
+  "http://$KC_IP:8080/admin/realms/kagent-dev" \
+  -d '{"realm":"kagent-dev","sslRequired":"none"}'
 
 # Import users (admin, reader, writer)
 curl -s -X POST -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
@@ -485,16 +560,39 @@ for c in json.load(sys.stdin):
     "http://$KC_IP:8080/admin/realms/kagent-dev/clients/$CLIENT_ID/default-client-scopes/groups-scope-kagent-dev"
 done
 
-# Enable standard flow + redirect URIs on are-cli (needed for browser login)
+# Configure are-cli for browser and device-code login.
+# Device-code login must not require PKCE, or arctl user login fails with
+# "Missing parameter: code_challenge_method".
 ARE_CLI_UUID=$(curl -s -H "Authorization: Bearer $KC_TOKEN" \
   "http://$KC_IP:8080/admin/realms/kagent-dev/clients" | python3 -c "
 import sys,json
 for c in json.load(sys.stdin):
     if c.get('clientId')=='are-cli': print(c['id'])
 ")
+curl -s -H "Authorization: Bearer $KC_TOKEN" \
+  "http://$KC_IP:8080/admin/realms/kagent-dev/clients/$ARE_CLI_UUID" \
+  -o /tmp/are-cli-client.json
+python3 - <<'PY'
+import json
+
+path = "/tmp/are-cli-client.json"
+with open(path) as f:
+    client = json.load(f)
+
+client["publicClient"] = True
+client["standardFlowEnabled"] = True
+client["redirectUris"] = ["*"]
+client["webOrigins"] = ["*"]
+attrs = client.setdefault("attributes", {})
+attrs["oauth2.device.authorization.grant.enabled"] = "true"
+attrs["pkce.code.challenge.method"] = ""
+
+with open(path, "w") as f:
+    json.dump(client, f)
+PY
 curl -s -X PUT -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \
   "http://$KC_IP:8080/admin/realms/kagent-dev/clients/$ARE_CLI_UUID" \
-  -d '{"clientId":"are-cli","standardFlowEnabled":true,"redirectUris":["*"],"webOrigins":["*"]}'
+  -d @/tmp/are-cli-client.json
 
 # Get the are-backend client secret (needed for Helm values)
 ARE_BACKEND_UUID=$(curl -s -H "Authorization: Bearer $KC_TOKEN" \
@@ -540,7 +638,7 @@ oidc:
   insecureSkipVerify: false
 ```
 
-> **Note**: If Keycloak shows a "Cookie not found" error in the browser, ensure `KC_HOSTNAME_URL` is set to the external URL (e.g., `http://<KC_IP>:8080`) in the Keycloak deployment env vars. This ensures Keycloak generates cookies with the correct domain. For HTTPS setups, this is not needed.
+> **Note**: If Keycloak shows a "Cookie not found" error in the browser on an HTTP-only dev install, confirm both realm SSL settings are set to `none` and `KC_HOSTNAME_URL` / `KC_HOSTNAME_ADMIN_URL` point to the external URL, for example `http://<KC_IP>:8080`. For production, use HTTPS instead of relaxing the realm SSL setting.
 
 ## Troubleshooting
 

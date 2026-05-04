@@ -2,7 +2,7 @@ apiVersion: ar.dev/v1alpha1
 kind: Agent
 metadata:
   name: demochatbot
-  version: "1.0.0"
+  version: "1.0.2"
 spec:
   description: "A Strands-based chatbot agent for testing deployments to AWS Bedrock AgentCore"
   source:

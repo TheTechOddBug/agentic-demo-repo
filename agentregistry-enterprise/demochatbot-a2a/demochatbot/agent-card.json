@@ -12,7 +12,8 @@
     {
       "id": "chat",
       "name": "General Chat",
-      "description": "Returns a simple deterministic response for validating AgentCore chat."
+      "description": "Returns a simple deterministic response for validating AgentCore chat.",
+      "tags": ["chat", "demo"]
     }
   ]
 }

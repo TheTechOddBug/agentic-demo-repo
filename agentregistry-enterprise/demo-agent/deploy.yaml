@@ -1,0 +1,12 @@
+apiVersion: ar.dev/v1alpha1
+kind: Deployment
+metadata:
+  name: echo-agent
+spec:
+  providerRef:
+    kind: Provider
+    name: AWS
+  targetRef:
+    kind: Agent
+    name: echo-agent
+    version: "1.0.0"

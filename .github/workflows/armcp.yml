@@ -1,0 +1,132 @@
+# 1. Gateway/AgentgatewayBackend/Route for MCP Server
+# 2. Retrieve the URL for the Gateway
+# 3. Register it in agentregistry
+
+name: 'Deploy MCP Server From AR Enterprise To AGW'
+
+on:
+  workflow_dispatch:
+      
+env:
+  REGION: "us-east-1"
+
+jobs:
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Create MCP Gateway
+        run: |
+          kubectl apply -f- <<EOF
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: Gateway
+          metadata:
+            name: mcp-gateway
+            namespace: agentgateway-system
+            labels:
+              app: github-mcp-server
+          spec:
+            gatewayClassName: agentgateway
+            listeners:
+              - name: mcp
+                port: 3000
+                protocol: HTTP
+                allowedRoutes:
+                  namespaces:
+                    from: Same
+          ---
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: github-pat
+            namespace: agentgateway-system
+          type: Opaque
+          stringData:
+            Authorization: "Bearer ${GITHUB_PAT}"
+          ---
+          apiVersion: agentgateway.dev/v1alpha1
+          kind: AgentgatewayBackend
+          metadata:
+            name: github-mcp-server
+            namespace: agentgateway-system
+          spec:
+            mcp:
+              targets:
+                - name: github-copilot
+                  static:
+                    host: api.githubcopilot.com
+                    port: 443
+                    path: /mcp/
+                    protocol: StreamableHTTP
+                    policies:
+                      tls: {}
+                      auth:
+                        secretRef:
+                          name: github-pat
+          ---
+          apiVersion: gateway.networking.k8s.io/v1
+          kind: HTTPRoute
+          metadata:
+            name: mcp-route
+            namespace: agentgateway-system
+            labels:
+              app: github-mcp-server
+          spec:
+            parentRefs:
+              - name: mcp-gateway
+            rules:
+              - matches:
+                  - path:
+                      type: PathPrefix
+                      value: /mcp
+                backendRefs:
+                  - name: github-mcp-server
+                    namespace: agentgateway-system
+                    group: agentgateway.dev
+                    kind: AgentgatewayBackend
+               EOF
+               
+      - name: Get Gateway IP
+        run: |
+          export GATEWAY_IP=$(kubectl get svc mcp-gateway -n agentgateway-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          echo $GATEWAY_IP
+          
+      - name: Create MCP Server
+        run: |
+          arctl apply -f - <<EOF
+          apiVersion: ar.dev/v1alpha1
+          kind: RemoteMCPServer
+          metadata:
+            name: github/copilot-mcp-server
+            version: "0.1.0"
+          spec:
+            title: github-copilot
+            description: Remote MCP server exposing github tools.
+            remote:
+              type: streamable-http
+              url: http://$GATEWAY_IP:3000/mcp
+          EOF
+      
+      - name: Deploy Agentcore Agent With MCP
+        run: |
+          arctl apply -f - <<EOF
+          apiVersion: ar.dev/v1alpha1
+          kind: Agent
+          metadata:
+            name: demochatbot
+            version: "1.0.4"
+          spec:
+            description: "A deterministic A2A/ADK-compatible chatbot for AWS Bedrock AgentCore"
+            source:
+              repository:
+                url: "https://github.com/AdminTurnedDevOps/agentic-demo-repo"
+                subfolder: "agentregistry-enterprise/demochatbot-a2a"
+            mcpServers:
+            - kind: RemoteMCPServer
+              name: github/copilot-mcp-server
+              version: "0.1.0"
+          EOF

@@ -31,7 +31,8 @@ git clone https://github.com/kagent-dev/kagent.git
 cd kagent
 
 # Checkout the openshell integration branch
-git checkout upstream/eitanya/openshell
+git fetch origin eitanya/openshell
+git checkout -b eitanya/openshell origin/eitanya/openshell
 ```
 
 ```bash
@@ -58,6 +59,7 @@ gcloud auth configure-docker us-docker.pkg.dev --quiet
 # Set your registry variables
 export DOCKER_REGISTRY=us-docker.pkg.dev/<YOUR_PROJECT>/<YOUR_REPO>
 export DOCKER_REPO=kagent-dev/kagent
+export OPENSHELL_REGISTRY=us-docker.pkg.dev/<YOUR_PROJECT>/<YOUR_REPO>/openshell
 ```
 
 ### Grant GKE Nodes Pull Access
@@ -123,6 +125,28 @@ This generates `Chart.yaml` for all sub-charts, downloads dependencies, and pack
 
 The OpenShell gateway must be running before kagent is installed.
 
+### Build and Push OpenShell Images
+
+The kagent integration depends on the OpenShell gateway and supervisor images from the `feat/k8s-supervisor-sideload-fork` branch. On an ARM Mac targeting amd64 GKE nodes, build and push linux/amd64 images from the OpenShell repo:
+
+```bash
+cd OpenShell
+
+export OPENSHELL_TAG=$(git rev-parse --short HEAD)
+
+DOCKER_PLATFORM=linux/amd64 \
+DOCKER_PUSH=1 \
+IMAGE_REGISTRY=$OPENSHELL_REGISTRY \
+IMAGE_TAG=$OPENSHELL_TAG \
+  tasks/scripts/docker-build-image.sh gateway
+
+DOCKER_PLATFORM=linux/amd64 \
+DOCKER_PUSH=1 \
+IMAGE_REGISTRY=$OPENSHELL_REGISTRY \
+IMAGE_TAG=$OPENSHELL_TAG \
+  tasks/scripts/docker-build-image.sh supervisor
+```
+
 ### Install the OpenShell Helm Chart
 
 From the OpenShell repo root:
@@ -136,13 +160,15 @@ helm upgrade --install openshell deploy/helm/openshell \
   --set server.disableGatewayAuth=true \
   --set service.type=ClusterIP \
   --set service.metricsPort=0 \
+  --set image.repository=${OPENSHELL_REGISTRY}/gateway \
+  --set image.tag=${OPENSHELL_TAG} \
   --set image.pullPolicy=Always \
-  --set supervisor.image.repository=ghcr.io/nvidia/openshell/supervisor \
-  --set supervisor.image.tag=latest \
+  --set supervisor.image.repository=${OPENSHELL_REGISTRY}/supervisor \
+  --set supervisor.image.tag=${OPENSHELL_TAG} \
   --set server.sandboxImagePullPolicy=IfNotPresent
 ```
 
-The chart pulls public images from `ghcr.io/nvidia/openshell/`.
+Make sure your GKE nodes can pull from the registry configured in `OPENSHELL_REGISTRY`.
 
 ### Create the SSH Handshake Secret
 
@@ -295,6 +321,126 @@ kubectl -n kagent port-forward svc/kagent-ui 8080:8080
 # Open http://localhost:8080
 ```
 
+## Sandbox CRD Configuration
+
+Once kagent and OpenShell are running, you can create sandboxed agent environments using the `Sandbox` CRD. Sandboxes can also be created through the kagent UI.
+
+### Basic Sandbox
+
+Choose an OpenClaw/NemoClaw sandbox image that has a `linux/amd64` manifest for GKE amd64 nodes. If you use a custom image, build and push it to a registry your cluster can pull from.
+
+```bash
+export OPENCLAW_SANDBOX_IMAGE=ghcr.io/nvidia/nemoclaw/sandbox-base:latest
+docker buildx imagetools inspect "$OPENCLAW_SANDBOX_IMAGE" | grep 'linux/amd64'
+```
+
+Apply a basic sandbox:
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: kagent.dev/v1alpha2
+kind: Sandbox
+metadata:
+  name: my-sandbox
+  namespace: kagent
+spec:
+  backend: openclaw
+  image: ${OPENCLAW_SANDBOX_IMAGE}
+  modelConfigRef: default-model-config
+  description: "my openclaw agent"
+EOF
+```
+
+Check status:
+
+```bash
+kubectl get sandboxes -n kagent
+```
+
+#### GKE OpenShell Network Namespace Workaround
+
+On GKE amd64 nodes, this OpenShell Kubernetes supervisor path may need privileged access to create network namespaces. If the generated OpenShell backend pod fails with `ip netns add` or `mount --make-shared /run/netns Permission denied`, patch the generated backend `sandboxes.agents.x-k8s.io` object and recycle the pod:
+
+```bash
+kubectl patch sandboxes.agents.x-k8s.io kagent-my-sandbox -n openshell --type=json \
+  -p='[
+    {"op":"add","path":"/spec/podTemplate/spec/containers/0/securityContext/privileged","value":true},
+    {"op":"add","path":"/spec/podTemplate/spec/containers/0/securityContext/allowPrivilegeEscalation","value":true}
+  ]'
+
+kubectl delete pod kagent-my-sandbox -n openshell --wait=false
+```
+
+### Sandbox with Telegram Integration
+
+The Sandbox CRD supports Telegram, Discord, and Slack channel integrations. Channels are only supported with the `openclaw` or `nemoclaw` backends.
+
+#### Set Up a Telegram Bot
+
+1. Open Telegram and chat with **@BotFather** (confirm the handle is exactly `@BotFather`).
+2. Send `/newbot` in that chat, follow the prompts, and save the bot token.
+3. To get your Telegram user ID, chat with **@RawDataBot** -- send any message and it will respond with JSON containing your user ID.
+
+#### Create the Bot Token Secret
+
+Store the bot token in a Kubernetes Secret instead of inlining it in the `Sandbox` manifest:
+
+```bash
+kubectl -n kagent create secret generic telegram-credentials \
+  --from-literal=bot-token='<your-bot-token>' \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+#### Create the Sandbox
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: kagent.dev/v1alpha2
+kind: Sandbox
+metadata:
+  name: my-claw
+  namespace: kagent
+spec:
+  backend: openclaw
+  image: ${OPENCLAW_SANDBOX_IMAGE}
+  modelConfigRef: default-model-config
+  description: "my openclaw agent"
+  channels:
+  - name: telegram
+    type: telegram
+    telegram:
+      allowedUserIDs:
+      - "your-telegram-chat-id"
+      botToken:
+        valueFrom:
+          type: Secret
+          name: telegram-credentials
+          key: bot-token
+EOF
+```
+
+Replace:
+- `your-telegram-chat-id` with the numeric ID from @RawDataBot
+- `<your-bot-token>` in the Secret command with the token from @BotFather
+
+### Supported Backends
+
+| Backend | Value | Description |
+|---------|-------|-------------|
+| OpenShell | `openshell` | Base sandbox with exec/SSH access, no messenger channels |
+| OpenClaw | `openclaw` | Sandbox with OpenClaw agent runtime, supports channels |
+| NemoClaw | `nemoclaw` | Sandbox with NemoClaw agent runtime, supports channels |
+
+### Supported Channels
+
+Channels are only available with the `openclaw` or `nemoclaw` backends.
+
+| Channel | Required Fields | Optional Fields |
+|---------|-----------------|-----------------|
+| Telegram | `botToken` | `allowedUserIDs`, `allowedUserIDsFrom` |
+| Discord | `botToken`, `channelAccess` | `allowlistChannels` (required when `channelAccess` is `allowlist`) |
+| Slack | `botToken`, `appToken`, `channelAccess` | `allowlistChannels`, `interactiveReplies` (default: true) |
+
 ## Troubleshooting
 
 ### Controller CrashLoopBackOff: "unable to build openshell sandbox backends"
@@ -332,9 +478,15 @@ kubectl create secret docker-registry gar-pull-secret \
   --docker-server=us-docker.pkg.dev \
   --docker-username=oauth2accesstoken \
   --docker-password="$(gcloud auth print-access-token)"
+
+kubectl create secret docker-registry gar-pull-secret \
+  --namespace openshell \
+  --docker-server=us-docker.pkg.dev \
+  --docker-username=oauth2accesstoken \
+  --docker-password="$(gcloud auth print-access-token)"
 ```
 
-Then add `--set 'imagePullSecrets[0].name=gar-pull-secret'` to your Helm install/upgrade command.
+Then add `--set 'imagePullSecrets[0].name=gar-pull-secret'` to the kagent and OpenShell Helm install/upgrade commands.
 
 > **Note**: The `oauth2accesstoken` credential expires after ~1 hour. For longer-lived access, use a service account key or Workload Identity.
 
@@ -379,11 +531,11 @@ kubectl delete namespace agent-sandbox-system
 
 | Component | Value |
 |-----------|-------|
-| Kagent Branch | `upstream/eitanya/openshell` (kagent-dev/kagent) |
+| Kagent Branch | `eitanya/openshell` (kagent-dev/kagent) |
 | OpenShell Branch | `feat/k8s-supervisor-sideload-fork` (kagent-dev/OpenShell) |
-| OpenShell Gateway Image | `ghcr.io/nvidia/openshell/gateway:latest` |
-| OpenShell Supervisor Image | `ghcr.io/nvidia/openshell/supervisor:latest` |
-| Sandbox Base Image | `ghcr.io/nvidia/openshell-community/sandboxes/base:latest` |
+| OpenShell Gateway Image | `${OPENSHELL_REGISTRY}/gateway:${OPENSHELL_TAG}` |
+| OpenShell Supervisor Image | `${OPENSHELL_REGISTRY}/supervisor:${OPENSHELL_TAG}` |
+| OpenClaw Sandbox Image | `${OPENCLAW_SANDBOX_IMAGE}` |
 | Kagent UI Port | 8080 |
 | Kagent Controller API Port | 8083 |
 | OpenShell gRPC Port | 8080 |

@@ -12,6 +12,7 @@ This guide walks through deploying kagent OSS with the OpenShell/OpenClaw sandbo
 - Docker Buildx with multi-platform support
 - Go 1.26.1+ (for controller manifest generation)
 - An LLM provider API key (Anthropic, OpenAI, etc.)
+- kagent installed (v0.9.2 or higher)
 
 ## Architecture Overview
 
@@ -339,7 +340,7 @@ Apply a basic sandbox:
 ```bash
 kubectl apply -f - <<EOF
 apiVersion: kagent.dev/v1alpha2
-kind: Sandbox
+kind: AgentHarness
 metadata:
   name: my-sandbox
   namespace: kagent

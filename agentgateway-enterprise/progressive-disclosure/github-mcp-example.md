@@ -122,7 +122,7 @@ kubectl apply -f - <<EOF
 apiVersion: enterpriseagentgateway.solo.io/v1alpha1
 kind: EnterpriseAgentgatewayBackend
 metadata:
-  name: github-mcp-server
+  name: github-mcp-server1
   namespace: agentgateway-system
 spec:
   entMcp:

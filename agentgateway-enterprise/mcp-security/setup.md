@@ -231,25 +231,88 @@ spec:
 EOF
 ```
 
-4. Capture the IP of the gateway
+4. Enable tracing and MCP tool access-log export for the gateway
+```
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: mcp-gateway-tracing
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: mcp-gateway
+  frontend:
+    tracing:
+      backendRef:
+        group: ""
+        kind: Service
+        name: solo-enterprise-telemetry-collector
+        namespace: kagent
+        port: 4317
+      protocol: GRPC
+      clientSampling: "true"
+      randomSampling: "true"
+      resources:
+      - name: service.name
+        expression: '"mcp-gateway"'
+      - name: deployment.environment.name
+        expression: '"demo"'
+      attributes:
+        add:
+        - name: request.host
+          expression: 'request.host'
+        - name: mcp.method_name
+          expression: 'default(mcp.methodName, "")'
+        - name: mcp.session_id
+          expression: 'default(mcp.sessionId, "")'
+        - name: mcp.tool_name
+          expression: 'default(mcp.tool.name, "")'
+        - name: backend.name
+          expression: 'default(backend.name, "")'
+    accessLog:
+      otlp:
+        backendRef:
+          group: ""
+          kind: Service
+          name: solo-enterprise-telemetry-collector
+          namespace: kagent
+          port: 4317
+        protocol: GRPC
+      attributes:
+        add:
+        - name: gen_ai.tool.name
+          expression: 'default(mcp.tool.name, "")'
+        - name: mcp.tool_name
+          expression: 'default(mcp.tool.name, "")'
+        - name: mcp.tool_target
+          expression: 'default(mcp.tool.target, "")'
+        - name: mcp.method_name
+          expression: 'default(mcp.methodName, "")'
+EOF
+```
+
+5. Capture the IP of the gateway
 ```
 export GATEWAY_IP=$(kubectl get svc mcp-gateway -n agentgateway-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
 echo $GATEWAY_IP
 ```
 
-5. Open MCP Inspector
+6. Open MCP Inspector
 ```
 npx modelcontextprotocol/inspector#0.18.0
 ```
 
-6. Specify, within the **URL** section, the following:
+7. Specify, within the **URL** section, the following:
 ```
 http://YOUR_ALB_IP:3000/mcp
 ```
 
 You should now be able to see the connection without any security. This means that the MCP Server is wide open.
 
-7. To implement auth security, add a gateway policy
+8. To implement auth security, add a gateway policy
 ```
 kubectl apply -f- <<EOF
 apiVersion: agentgateway.dev/v1alpha1
@@ -271,7 +334,7 @@ spec:
 EOF
 ```
 
-8. Open the MCP Inspector and under **Authentication**, add in the following:
+9. Open the MCP Inspector and under **Authentication**, add in the following:
 - Header Name: **Authorization**
 - Bearer Token:
 ```

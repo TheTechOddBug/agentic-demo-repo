@@ -178,7 +178,6 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | Scenario | Better Fit |
 |----------|-----------|
 | AWS-native, zero-ops, quick start with managed tools | **AgentCore Gateway** |
-| Built-in integrations (Slack, Jira, Salesforce, etc.) | **AgentCore Gateway** |
 | Semantic/natural-language tool search | **AgentCore Gateway** |
 | Lambda/Smithy as MCP tool sources | **AgentCore Gateway** |
 | Multi-cloud, hybrid, or on-prem deployment | **agentgateway Enterprise** |

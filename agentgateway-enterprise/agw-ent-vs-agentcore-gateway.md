@@ -56,8 +56,8 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 
 | Capability | AgentCore Gateway | agentgateway Enterprise |
 |-----------|------------------|------------------------|
-| **Semantic search** | Yes -- built-in `x_amz_bedrock_agentcore_search` tool with vector embeddings, natural language queries | No built-in semantic search |
-| **Progressive disclosure** | Not a native feature (achievable via semantic search) | Yes -- `Search` tool mode exposes only `get_tool` and `invoke_tool` meta-tools; reduces context window |
+| **Semantic search** | Yes built-in `x_amz_bedrock_agentcore_search` tool with vector embeddings, natural language queries | Built-in semantic search coming soon |
+| **Progressive disclosure** | Not a native feature (achievable via semantic search) | Yes `Search` tool mode exposes only `get_tool` and `invoke_tool` meta-tools; reduces context window |
 | **Capability sync** | Implicit (on create/update) + explicit (`SynchronizeGatewayTargets` API) | Real-time via live MCP connections; file-watch for config changes; xDS push for Kubernetes |
 | **Listing modes** | `DEFAULT` (pre-indexed) or `DYNAMIC` (live forward) | Always live (connections maintained to upstreams) |
 | **Tool catalog persistence** | Server-side (AWS-managed, survives restarts) | In-memory; sessions reconstructed on reconnect |

@@ -508,18 +508,54 @@ The output should show both `arctl_version` and `server_version`.
 
 ### Log In
 
-Authenticate via the device-code flow (opens a browser):
+> **Known limitation**: The current `arctl user login` command does not pass a `scope` parameter in the device authorization request. Keycloak does not require this, but Microsoft Entra does — you will see `AADSTS900144: The request body must contain the following parameter: 'scope'`. Until a future `arctl` release adds a `--scope` flag, use the manual device-code flow below to obtain a token and pass it to `arctl` via `--registry-token` or the `ARCTL_API_TOKEN` environment variable.
+
+#### Manual Device-Code Login
+
+Initiate the Entra device-code flow with the required scope:
 
 ```bash
-arctl user login \
-  --oidc-issuer-url "https://login.microsoftonline.com/$TENANT_ID/v2.0" \
-  --oidc-client-id "$ARE_CLI_CLIENT_ID"
+DEVICE_RESPONSE=$(curl -s -X POST \
+  "https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/devicecode" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "client_id=$ARE_CLI_CLIENT_ID&scope=openid+api://$ARE_BACKEND_CLIENT_ID/agentregistry")
+
+echo "$DEVICE_RESPONSE" | python3 -m json.tool
 ```
 
-This initiates the OAuth 2.0 device authorization grant:
-1. The CLI prints a URL (`https://microsoft.com/devicelogin`) and a code
-2. Open the URL in a browser, enter the code, and sign in with your Entra account
-3. The CLI receives a token, stores it in your system keychain, and refreshes automatically on subsequent commands
+This prints a message like:
+
+```
+To sign in, use a web browser to open the page https://login.microsoft.com/device
+and enter the code XXXXXXX to authenticate.
+```
+
+Open the URL in a browser, enter the code, and sign in with your Entra account. Then poll for the token:
+
+```bash
+DEVICE_CODE=$(echo "$DEVICE_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['device_code'])")
+
+# Poll until authentication completes (typically 5-30 seconds)
+while true; do
+  TOKEN_RESPONSE=$(curl -s -X POST \
+    "https://login.microsoftonline.com/$TENANT_ID/oauth2/v2.0/token" \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=urn:ietf:params:oauth:grant-type:device_code&client_id=$ARE_CLI_CLIENT_ID&device_code=$DEVICE_CODE")
+
+  ERROR=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('error','none'))")
+  if [ "$ERROR" = "none" ]; then
+    export ARCTL_API_TOKEN=$(echo "$TOKEN_RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+    echo "Token obtained successfully"
+    break
+  elif [ "$ERROR" = "authorization_pending" ]; then
+    sleep 5
+  else
+    echo "Error: $ERROR"
+    echo "$TOKEN_RESPONSE" | python3 -m json.tool
+    break
+  fi
+done
+```
 
 Verify authentication:
 
@@ -527,7 +563,11 @@ Verify authentication:
 arctl get providers
 ```
 
-> **Important**: The `arctl user login` command requires the **device code flow** to be enabled on the `are-cli` app registration. If you see `AADSTS7000218: The request body must contain the following parameter: 'client_assertion' or 'client_secret'`, confirm the app registration has **Allow public client flows** set to **Yes** (Step 3b).
+You can also pass the token directly on any command:
+
+```bash
+arctl get providers --registry-token "$ARCTL_API_TOKEN"
+```
 
 > **Note**: The enterprise `arctl` installs to `$HOME/.arctl/bin/arctl`. If you also have the OSS `arctl` installed (e.g., at `/usr/local/bin/arctl`), make sure the enterprise one takes precedence in your PATH. The OSS CLI does not have `user login`, `apply`, `provider`, or other enterprise commands.
 
@@ -877,6 +917,10 @@ The OIDC token does not contain the expected role claim. Fix:
 3. If using app roles, check that `oidc.roleClaim` is set to `roles` (not `groups`)
 4. Run `helm upgrade` to apply any changes
 5. Log out and back in (`arctl user login`)
+
+### "AADSTS900144: The request body must contain the following parameter: 'scope'"
+
+The `arctl user login` command does not currently pass a `scope` parameter in the device authorization request. Entra requires this. Use the [manual device-code login](#manual-device-code-login) flow in Step 8 instead.
 
 ### "AADSTS7000218: The request body must contain ... 'client_assertion' or 'client_secret'"
 

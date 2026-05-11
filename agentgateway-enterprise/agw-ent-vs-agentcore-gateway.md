@@ -2,7 +2,7 @@
 
 ## Executive Summary
 
-**AWS Bedrock AgentCore Gateway** is a fully managed, serverless AWS service focused on making it easy to connect agents to tools via MCP in a single cloud. **agentgateway Enterprise** is an open-source-core, self-hosted (or Kubernetes-native) proxy that provides a broader scope -- MCP, A2A, and LLM gateway -- with deep control-plane customization and multi-cloud/hybrid deployment.
+**AWS Bedrock AgentCore Gateway** is a fully managed, serverless AWS service focused on making it easy to connect agents to tools via MCP in a single cloud. **agentgateway Enterprise** is an open-source-core, self-hosted (or Kubernetes-native) proxy that provides a broader scope,MCP, A2A, and LLM gateway,with deep control-plane customization and multi-cloud/hybrid deployment.
 
 Both act as **MCP aggregation proxies**: they sit between AI agents and upstream MCP servers/tools, presenting a unified `tools/list` to clients. But they differ significantly in deployment model, protocol depth, extensibility, and enterprise feature surface.
 
@@ -10,20 +10,20 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 
 ## Deployment & Operations
 
-| Dimension | AgentCore Gateway | agentgateway Enterprise |
+| Dimension | AgentCore Gateway | Agentgateway Enterprise |
 |-----------|------------------|------------------------|
-| **Deployment model** | Fully managed SaaS (AWS) | Self-hosted: standalone binary, Kubernetes (Helm + Gateway API controller), or Docker |
+| **Deployment model** | AWS only | Self-hosted: standalone binary, Kubernetes (Helm + Gateway API controller), or Docker |
 | **Infrastructure** | Serverless, zero ops | You manage the infra; Kubernetes controller auto-deploys proxy pods per Gateway resource |
 | **Multi-cloud** | AWS only | Any cloud, on-prem, hybrid, edge |
 | **Scaling** | Automatic (AWS-managed) | HPA/VPA overlays, manual replicas, or custom autoscaler |
 | **Configuration model** | AWS API / Console / CLI | YAML/JSON config file with hot-reload, or xDS from Kubernetes control plane (CRDs) |
-| **Pricing** | Pay-per-use (AWS metering) | Open-source core (Apache 2.0) + Solo enterprise license |
+| **Pricing** | Pay-per-use (AWS metering) | Open-source core + Solo enterprise license |
 
 ---
 
 ## MCP Protocol Support
 
-| Capability | AgentCore Gateway | agentgateway Enterprise |
+| Capability | AgentCore Gateway | Agentgateway Enterprise |
 |-----------|------------------|------------------------|
 | **MCP versions** | 2025-11-25, 2025-03-26, 2025-06-18 | All versions (negotiates lowest common across upstreams) |
 | **Downstream transports** | Streamable HTTP | Streamable HTTP + Legacy SSE |

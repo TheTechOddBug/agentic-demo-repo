@@ -32,11 +32,11 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | **stdio support** | No (cloud-native only) | Yes -- spawn local processes (npx, uvx, etc.) as MCP servers |
 | **`tools/list`** | Yes | Yes |
 | **`tools/call`** | Yes | Yes |
-| **`prompts/list`** | Yes | Yes (single-target; limited in multiplex mode) |
-| **`prompts/get`** | Yes | Yes (single-target; limited in multiplex mode) |
-| **`resources/list`** | Yes | Yes (single-target only; multiplex WIP) |
-| **`resources/read`** | Yes | Yes (single-target only) |
-| **`resources/templates/list`** | Yes | Yes (single-target only) |
+| **`prompts/list`** | Yes | Yes |
+| **`prompts/get`** | Yes | Yes |
+| **`resources/list`** | Yes | Yes |
+| **`resources/read`** | Yes | Yes |
+| **`resources/templates/list`** | Yes | Yes |
 
 ---
 

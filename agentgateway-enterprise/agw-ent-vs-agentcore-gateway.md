@@ -74,8 +74,8 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | **Smithy -> MCP** | Yes (AWS Smithy models) | No |
 | **Lambda -> MCP** | Yes (direct Lambda invocation) | No (would need OpenAPI/HTTP wrapper) |
 | **API Gateway -> MCP** | Yes (REST API stages) | No (use as generic HTTP backend) |
-| **Built-in integrations** | Yes -- 20+ templates (Slack, Jira, Salesforce, Teams, etc.) | No built-in templates |
-| **Kubernetes service discovery** | No | Yes -- label selectors for dynamic MCP target discovery |
+| **Built-in integrations** | Yes 20+ templates (Slack, Jira, Salesforce, Teams, etc.) | No built-in templates |
+| **Kubernetes service discovery** | No | Yes label selectors for dynamic MCP target discovery |
 | **Static host/port** | Yes | Yes |
 | **HTTP passthrough targets** | Yes (for AgentCore Runtime agents) | Yes (generic HTTP/TCP/TLS proxy) |
 

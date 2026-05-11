@@ -44,11 +44,11 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 
 | Capability | AgentCore Gateway | agentgateway Enterprise |
 |-----------|------------------|------------------------|
-| **Multi-target aggregation** | Yes -- unified `tools/list` across all MCP targets | Yes -- fan-out to all targets, merge responses |
+| **Multi-target aggregation** | Yes unified `tools/list` across all MCP targets | Yes fan-out to all targets, merge responses |
 | **Tool naming** | Auto-generated: `{targetName}_{operationId}` format with configurable naming rules | `{targetName}_{toolName}` with `_` delimiter; configurable prefix mode (`Always` or `Conditional`) |
 | **Prompt/resource aggregation** | Yes (tools, prompts, resources all aggregated) | Tools and prompts aggregated; resources NOT aggregated in multiplex mode (GitHub issue #404) |
-| **Protocol version negotiation** | Not documented | Yes -- gateway selects lowest common version across all upstreams |
-| **Instructions merging** | Not documented | Yes -- each upstream's instructions labeled with `[serverName]` and concatenated |
+| **Protocol version negotiation** | Not documented | Yes gateway selects lowest common version across all upstreams |
+| **Instructions merging** | Not documented | Yes each upstream's instructions labeled with `[serverName]` and concatenated |
 
 ---
 

@@ -1,4 +1,4 @@
-# AgentRegistry Enterprise - Setup Guide
+# Agentregistry Enterprise - Setup Guide
 
 This guide walks through installing AgentRegistry Enterprise on a Kubernetes cluster with Keycloak OIDC authentication and AWS Bedrock AgentCore integration.
 

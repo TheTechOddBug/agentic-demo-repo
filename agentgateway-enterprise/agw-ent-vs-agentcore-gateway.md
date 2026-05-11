@@ -86,9 +86,9 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | Capability | AgentCore Gateway | agentgateway Enterprise |
 |-----------|------------------|------------------------|
 | **Inbound auth types** | OAuth (JWT), IAM (SigV4), authenticate-only, none | JWT (multi-provider), API keys, Basic auth, OAuth/OIDC, MCP OAuth (RFC 8707), external auth |
-| **MCP OAuth spec (RFC 8707)** | Not documented as native | Yes -- full implementation: `/.well-known/oauth-protected-resource`, IdP-specific adapters (Auth0, Keycloak), CORS handling |
+| **MCP OAuth spec (RFC 8707)** | Not documented as native | Yes full implementation: `/.well-known/oauth-protected-resource`, IdP-specific adapters (Auth0, Keycloak), CORS handling |
 | **Outbound auth types** | OAuth (2LO client credentials, 3LO auth code + PKCE), IAM SigV4, API keys, none | Passthrough, inline key, AWS (SigV4 + explicit/implicit creds), Azure (client secret, managed identity, workload identity), GCP (access/ID token) |
-| **3-Legged OAuth (3LO)** | Yes -- full auth code flow with URL session binding for MCP server targets | Enterprise: full STS with dual-OAuth, PKCE, PAR, DCR, Entra OBO |
+| **3-Legged OAuth (3LO)** | Yes full auth code flow with URL session binding for MCP server targets | Enterprise: full STS with dual-OAuth, PKCE, PAR, DCR, Entra OBO |
 | **MCP-level RBAC** | Lambda interceptors for tool/operation/parameter-level access control | CEL-based RBAC: tool-level, prompt-level, resource-level filtering with JWT claims, source IP, etc. |
 | **RBAC enforcement** | Pre-execution via REQUEST interceptors | Inline: filters `tools/list` responses, blocks unauthorized `tools/call`, applies to search mode meta-tools too |
 | **Policy language** | Lambda code (any language) + Cedar for resource policies | CEL expressions (e.g., `mcp.tool.name == "echo" && jwt.sub == "admin"`) |
@@ -101,9 +101,9 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | Capability | AgentCore Gateway | agentgateway Enterprise |
 |-----------|------------------|------------------------|
 | **Stateful sessions** | Managed by AWS (serverless) | Yes -- `Stateful` mode with in-memory `SessionManager`, `Mcp-Session-Id` header, GET/DELETE support |
-| **Stateless mode** | Not documented | Yes -- `Stateless` mode: each POST auto-wraps with Initialize/Initialized, no server-side state |
-| **Session affinity** | Managed by AWS | Yes -- backend pinning: first request resolves endpoint, subsequent requests stick to same pod |
-| **Session resume** | Not documented | Yes -- `SessionState::MCP` encodes per-target session IDs and pinned backends for resume |
+| **Stateless mode** | Not documented | Yes `Stateless` mode: each POST auto-wraps with Initialize/Initialized, no server-side state |
+| **Session affinity** | Managed by AWS | Yes backend pinning: first request resolves endpoint, subsequent requests stick to same pod |
+| **Session resume** | Not documented | Yes `SessionState::MCP` encodes per-target session IDs and pinned backends for resume |
 | **Session encryption** | AWS-managed KMS | `SESSION_KEY` (32-byte hex) for cookie-based session persistence |
 
 ---
@@ -125,7 +125,7 @@ Both act as **MCP aggregation proxies**: they sit between AI agents and upstream
 | **Rate limiting** | Not built-in (achievable via interceptors) | Local (token bucket per route), remote (external service), enterprise global (RateLimitConfig CRD) |
 | **Request/response transformation** | Lambda interceptors (REQUEST/RESPONSE) | CEL-based transformations: header set/add/remove, body rewriting, metadata injection |
 | **Traffic routing rules** | Gateway rules with priority, principal/path matching, weighted traffic splits | HTTPRoute/GRPCRoute/TCPRoute/TLSRoute matching (path, header, query, method), weighted backends |
-| **A/B testing** | Yes -- weighted config bundle overrides | Yes -- weighted backend routing |
+| **A/B testing** | Yes weighted config bundle overrides | Yes weighted backend routing |
 | **CORS** | Not documented | Full CORS policy support |
 | **CSRF** | Not documented | CSRF protection with origin allowlisting |
 | **Retries** | Not documented | HTTPRoute retry policy |

@@ -38,13 +38,119 @@ export PATH=$HOME/.arctl/bin:$PATH
 arctl version --json
 ```
 
-## 2. Create the Namespace
+## 2. EKS Prerequisites: EBS CSI Driver and StorageClass
+
+The bundled PostgreSQL and ClickHouse require persistent volumes. EKS 1.27+ requires the **EBS CSI driver** — the legacy in-tree `gp2` provisioner no longer works. If your cluster already has a working CSI-backed default StorageClass, skip this step.
+
+### Install the EBS CSI Driver
+
+The EBS CSI controller needs IAM permissions. The recommended approach is **EKS Pod Identity** (avoids OIDC provider quota issues).
+
+```bash
+# Install the Pod Identity Agent addon
+aws eks create-addon \
+  --cluster-name <CLUSTER_NAME> \
+  --addon-name eks-pod-identity-agent \
+  --region <REGION>
+
+# Create an IAM role for the EBS CSI driver with Pod Identity trust
+cat > /tmp/ebs-csi-trust.json <<'TRUST'
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "pods.eks.amazonaws.com"
+      },
+      "Action": [
+        "sts:AssumeRole",
+        "sts:TagSession"
+      ]
+    }
+  ]
+}
+TRUST
+
+aws iam create-role \
+  --role-name <CLUSTER_NAME>-ebs-csi-role \
+  --assume-role-policy-document file:///tmp/ebs-csi-trust.json
+
+aws iam attach-role-policy \
+  --role-name <CLUSTER_NAME>-ebs-csi-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy
+
+# Get the role ARN
+EBS_CSI_ROLE_ARN=$(aws iam get-role --role-name <CLUSTER_NAME>-ebs-csi-role --query "Role.Arn" --output text)
+
+# Create the Pod Identity association
+aws eks create-pod-identity-association \
+  --cluster-name <CLUSTER_NAME> \
+  --namespace kube-system \
+  --service-account ebs-csi-controller-sa \
+  --role-arn "$EBS_CSI_ROLE_ARN" \
+  --region <REGION>
+
+# Install the EBS CSI driver addon with the IAM role
+aws eks create-addon \
+  --cluster-name <CLUSTER_NAME> \
+  --addon-name aws-ebs-csi-driver \
+  --service-account-role-arn "$EBS_CSI_ROLE_ARN" \
+  --region <REGION>
+```
+
+Wait for the addon to become `ACTIVE`:
+
+```bash
+aws eks describe-addon \
+  --cluster-name <CLUSTER_NAME> \
+  --addon-name aws-ebs-csi-driver \
+  --region <REGION> \
+  --query "addon.status" --output text
+```
+
+Verify the controller pods are running (all containers ready, no CrashLoopBackOff):
+
+```bash
+kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-ebs-csi-driver
+```
+
+### Create a Default StorageClass
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "true"
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+volumeBindingMode: WaitForFirstConsumer
+allowVolumeExpansion: true
+EOF
+
+# Remove default annotation from the legacy gp2 class
+kubectl annotate storageclass gp2 storageclass.kubernetes.io/is-default-class- 2>/dev/null || true
+```
+
+Verify:
+
+```bash
+kubectl get storageclass
+```
+
+You should see `gp3 (default)` using the `ebs.csi.aws.com` provisioner.
+
+## 3. Create the Namespace
 
 ```bash
 kubectl create namespace agentregistry-system
 ```
 
-## 3. Prepare the Helm Values File
+## 4. Prepare the Helm Values File
 
 The key difference from a standard installation is `service.type: ClusterIP`. No LoadBalancer is created — routing is handled by the Istio Gateway.
 
@@ -101,7 +207,7 @@ EOF
 
 > **Production note**: On a private cluster, replace the bundled PostgreSQL with an RDS instance in the same VPC. Set `database.postgres.bundled.enabled: false` and `database.postgres.url` to the RDS connection string.
 
-## 4. Install the Helm Chart
+## 5. Install the Helm Chart
 
 ```bash
 helm upgrade --install agentregistry-enterprise \
@@ -112,7 +218,7 @@ helm upgrade --install agentregistry-enterprise \
   --wait --timeout 5m
 ```
 
-## 5. Verify the ClusterIP Service
+## 6. Verify the ClusterIP Service
 
 ```bash
 kubectl get svc agentregistry-enterprise -n agentregistry-system
@@ -139,7 +245,7 @@ kubectl logs -n agentregistry-system deployment/agentregistry-enterprise --tail=
 
 You should see `using OIDC authentication`, `HTTP server starting` on `:8080`, and `MCP HTTP server starting` on `:31313`.
 
-## 6. Route Traffic Through the Istio Gateway
+## 7. Route Traffic Through the Istio Gateway
 
 The Istio Gateway backed by the NLB is the single ingress point for the private cluster. Create an HTTPRoute to route external traffic to the AgentRegistry Enterprise ClusterIP service.
 
@@ -260,7 +366,35 @@ curl -s "http://$AR_ENDPOINT/v0/version" | python3 -m json.tool
 curl -s -o /dev/null -w "%{http_code}" "http://$AR_ENDPOINT/healthz"
 ```
 
-## 7. Configure DNS (Optional)
+## 8. Access the UI and API from Your Laptop
+
+The internal NLB is only reachable from within the VPC. To access AgentRegistry from your laptop, use `kubectl port-forward` to tunnel through the EKS API server.
+
+### Port-Forward the Service Directly
+
+```bash
+kubectl -n agentregistry-system port-forward svc/agentregistry-enterprise 8080:8080
+```
+
+Then open:
+- **UI**: http://localhost:8080
+- **API docs**: http://localhost:8080/docs
+- **Health**: http://localhost:8080/healthz
+
+### Port-Forward Through the Istio Gateway
+
+Alternatively, forward through the gateway service to test the full routing path:
+
+```bash
+kubectl -n agentregistry-system port-forward svc/agentregistry-gateway-istio 8080:80
+```
+
+Then open:
+- **UI**: http://localhost:8080
+
+> **Note**: The port-forward runs as long as the terminal session is open. For persistent access, set up a VPN (AWS Client VPN or WireGuard) or a bastion host within the VPC.
+
+## 9. Configure DNS (Optional)
 
 For a clean endpoint, create a Route 53 private hosted zone record pointing to the NLB:
 
@@ -281,7 +415,7 @@ aws route53 change-resource-record-sets \
   }'
 ```
 
-## 8. Authenticate the arctl CLI
+## 10. Authenticate the arctl CLI
 
 From a machine with VPC access (bastion, VPN, or the GitLab runner):
 

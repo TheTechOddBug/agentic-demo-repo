@@ -492,11 +492,13 @@ The UI is now accessible at `https://<ARE_HTTPS_IP>`. Your browser will warn abo
 
 ## 8. Configure and Authenticate the arctl CLI
 
-Point the CLI at your server (the arctl CLI uses the direct HTTP service, not the HTTPS gateway):
+Point the CLI at the AgentRegistry Enterprise service. The CLI does not support `--insecure-skip-verify` for registry API calls, so use the direct HTTP service rather than the HTTPS gateway (which uses a self-signed certificate):
 
 ```bash
 export ARCTL_API_BASE_URL=http://$AR_IP:8080
 ```
+
+> **Note**: The HTTPS gateway (`https://$ARE_HTTPS_IP`) is for browser-based Entra SPA login only. The CLI connects directly to the service over HTTP. For production with a CA-signed certificate, you can point the CLI at the HTTPS endpoint instead.
 
 Verify connectivity:
 
@@ -511,6 +513,16 @@ The output should show both `arctl_version` and `server_version`.
 > **Known limitation**: The current `arctl user login` command does not pass a `scope` parameter in the device authorization request. Keycloak does not require this, but Microsoft Entra does — you will see `AADSTS900144: The request body must contain the following parameter: 'scope'`. Until a future `arctl` release adds a `--scope` flag, use the manual device-code flow below to obtain a token and pass it to `arctl` via `--registry-token` or the `ARCTL_API_TOKEN` environment variable.
 
 #### Manual Device-Code Login
+
+This flow uses three variables from the app registration steps above. Confirm they are set in your shell:
+
+```bash
+echo "TENANT_ID:            $TENANT_ID"
+echo "ARE_CLI_CLIENT_ID:    $ARE_CLI_CLIENT_ID"
+echo "ARE_BACKEND_CLIENT_ID: $ARE_BACKEND_CLIENT_ID"
+```
+
+If any are empty, re-export them (the values were printed during Steps 3a-3b).
 
 Initiate the Entra device-code flow with the required scope:
 

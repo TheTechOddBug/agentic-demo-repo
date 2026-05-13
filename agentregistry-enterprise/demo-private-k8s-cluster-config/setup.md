@@ -22,6 +22,7 @@ The private EKS cluster has no public endpoint. All external traffic enters thro
 ## Prerequisites
 
 - A private AWS EKS cluster with `kubectl` access (via VPN, bastion, or SSM)
+- Kubernetes Gateway API CRDs
 - Istio installed with a `GatewayClass` named `istio`
 - An existing Istio `Gateway` resource with an NLB-backed external listener, or permissions to create one
 - `helm` v3 installed

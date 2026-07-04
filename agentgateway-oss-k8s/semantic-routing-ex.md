@@ -343,22 +343,27 @@ Port-forward (or use the LoadBalancer address once assigned):
 kubectl port-forward -n semantic-routing svc/semantic-routing 8080:8080 &
 ```
 
+```bash
+export INGRESS_GW_ADDRESS=$(kubectl get svc -n semantic-routing semantic-routing -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+echo $INGRESS_GW_ADDRESS
+```
+
 Intent-based routing: same endpoint, different models.
 
 - Explicit intent header: escalates to the expensive model -> claude-opus-4-8
 - No header; the PreRouting CEL classifier detects "prove" -> gpt-5.5
 - Generic prompt: stays on the cheaper default -> claude-sonnet-5
 ```bash
-curl -s http://localhost:8080/v1/chat/completions \
+curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -H 'x-intent: code' \
   -d '{"model":"any","messages":[{"role":"user","content":"write a binary search in Go"}]}' | jq -r .model
 
-curl -s http://localhost:8080/v1/chat/completions \
+curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"any","messages":[{"role":"user","content":"prove sqrt(2) is irrational"}]}' | jq -r .model
 
-curl -s http://localhost:8080/v1/chat/completions \
+curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"any","messages":[{"role":"user","content":"say hi"}]}' | jq -r .model
 ```
@@ -369,7 +374,7 @@ Weighted split (~80/20 over 10 calls):
 
 ```bash
 for i in $(seq 1 10); do
-  curl -s http://localhost:8080/v1/chat/completions \
+  curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
     -H 'Host: fast.demo.internal' -H 'content-type: application/json' \
     -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}' | jq -r .model
 done | sort | uniq -c

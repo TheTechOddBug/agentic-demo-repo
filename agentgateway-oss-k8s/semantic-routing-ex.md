@@ -8,7 +8,7 @@ agentgateway does not ship a first-party embedding-based semantic classifier. Wh
 - **`HTTPRoute`**: weighted splits and header-based routing across AI backends.
 - **`AgentgatewayPolicy`** with **`phase: PreRouting`**: transformation (CEL) or `extProc` that runs *before* route selection, so a derived intent header can drive the routing decision.
 
-The pattern: a PreRouting policy classifies the request and sets `x-intent`; the HTTPRoute matches on `x-intent` and steers to the right model backend. Swap the CEL classifier for an `extProc` server and the same wiring becomes true semantic routing.x
+The pattern: a PreRouting policy classifies the request and sets `x-intent`; the HTTPRoute matches on `x-intent` and steers to the right model backend. Swap the CEL classifier for an `extProc` server and the same wiring becomes true semantic routing.
 
 ## Quick Vocab
 
@@ -143,7 +143,7 @@ metadata:
   namespace: semantic-routing
 spec:
   targetRefs:
-  - group: agentgateway.dev/v1alpha1
+  - group: agentgateway.dev
     kind: AgentgatewayBackend
     name: resilient-failover
     sectionName: primary-claude-sonnet
@@ -159,7 +159,7 @@ metadata:
   namespace: semantic-routing
 spec:
   targetRefs:
-  - group: agentgateway.dev/v1alpha1
+  - group: agentgateway.dev
     kind: AgentgatewayBackend
     name: resilient-failover
     sectionName: fallback-gpt-5-mini
@@ -220,7 +220,7 @@ spec:
       - name: x-intent
         value: code
     backendRefs:
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: claude-opus
   - matches:
@@ -231,7 +231,7 @@ spec:
       - name: x-intent
         value: deep-reasoning
     backendRefs:
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: gpt-5-5
   - matches:
@@ -239,7 +239,7 @@ spec:
         type: PathPrefix
         value: /v1/chat/completions
     backendRefs:
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: claude-sonnet
 ---
@@ -260,11 +260,11 @@ spec:
         type: PathPrefix
         value: /v1/chat/completions
     backendRefs:
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: claude-sonnet
       weight: 80
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: gpt-5-mini
       weight: 20
@@ -286,7 +286,7 @@ spec:
         type: PathPrefix
         value: /v1/chat/completions
     backendRefs:
-    - group: agentgateway.dev/v1alpha1
+    - group: agentgateway.dev
       kind: AgentgatewayBackend
       name: resilient-failover
 EOF
@@ -323,7 +323,7 @@ EOF
 
 Keyword CEL is deliberately simple; it's a stand-in for the classifier. The same PreRouting slot accepts an `extProc` policy instead, which is how you plug in a real semantic classifier (see [the ladder](#from-keyword-cel-to-true-semantic-routing)).
 
-This mirrors the pattern agentgateway uses in its own e2e suite: a PreRouting policy sets a header from a JWT claim (`jwt.tier`) and the HTTPRoute routes premium users to a different backend (`ent-controller/test/e2e/features/agentgateway/policies/testdata/jwt-transform-routing-policy.yaml`).
+This mirrors patterns from agentgateway's own e2e suite: transformation policies set headers from CEL over request headers and body (`controller/test/e2e/testdata/transformation/transform-for-headers.yaml` and `transform-for-body.yaml`), and JWT claims are exposed to CEL as `jwt.<claim>` (`controller/test/e2e/testdata/remotejwtauth/secured-gateway-policy-with-rbac.yaml`).
 
 ## Step 5: Verify status
 
@@ -348,17 +348,16 @@ Intent-based routing: same endpoint, different models.
 - No header; the PreRouting CEL classifier detects "prove" -> gpt-5.5
 - Generic prompt: stays on the cheaper default -> claude-sonnet-5
 ```bash
-
-curl -s http://35.229.54.135:8080/v1/chat/completions \
+curl -s http://localhost:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -H 'x-intent: code' \
   -d '{"model":"any","messages":[{"role":"user","content":"write a binary search in Go"}]}' | jq -r .model
 
-curl -s http://35.229.54.135:8080/v1/chat/completions \
+curl -s http://localhost:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"any","messages":[{"role":"user","content":"prove sqrt(2) is irrational"}]}' | jq -r .model
 
-curl -s http://35.229.54.135:8080/v1/chat/completions \
+curl -s http://localhost:8080/v1/chat/completions \
   -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"any","messages":[{"role":"user","content":"say hi"}]}' | jq -r .model
 ```
@@ -369,7 +368,7 @@ Weighted split (~80/20 over 10 calls):
 
 ```bash
 for i in $(seq 1 10); do
-  curl -s http://35.229.54.135:8080/v1/chat/completions \
+  curl -s http://localhost:8080/v1/chat/completions \
     -H 'Host: fast.demo.internal' -H 'content-type: application/json' \
     -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}' | jq -r .model
 done | sort | uniq -c
@@ -378,7 +377,7 @@ done | sort | uniq -c
 Failover serves from `claude-sonnet-5` (priority group 0) while healthy, shifting to `gpt-5-mini` if Anthropic degrades:
 
 ```bash
-curl -s http://35.229.54.135:8080/v1/chat/completions \
+curl -s http://localhost:8080/v1/chat/completions \
   -H 'Host: resilient.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}' | jq -r .model
 ```
@@ -620,7 +619,7 @@ EOF
 Remove the CEL classifier so the two PreRouting policies don't fight over `x-intent`, then attach the extProc policy. `requestBodyMode: Buffered` makes agentgateway send the full request body before route selection, which is what lets the classifier see the prompt:
 
 ```bash
-kubectl delete gentgatewaypolicy intent-classifier -n semantic-routing
+kubectl delete agentgatewaypolicy intent-classifier -n semantic-routing
 
 kubectl apply -f - <<EOF
 apiVersion: agentgateway.dev/v1alpha1

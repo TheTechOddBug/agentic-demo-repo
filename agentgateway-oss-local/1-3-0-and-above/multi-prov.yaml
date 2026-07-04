@@ -1,3 +1,4 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
 llm:
   port: 3000
   providers:
@@ -55,6 +56,18 @@ llm:
       - '*'
       - GET
       - POST
+    apiKey:
+      keys:
+      - key: agw_sk_wg5vsfFatykpveW5N1f4IxBeoqh0EXug
+        metadata:
+          id: 1f62119d-e9a7-4e8f-8f53-ea4adf7af4d2
+          name: mikesteamkey
+      mode: strict
+      location:
+        header:
+          name: authorization
+          prefix: 'Bearer '
+  virtualModels: []
 mcp:
   port: 3001
   targets:

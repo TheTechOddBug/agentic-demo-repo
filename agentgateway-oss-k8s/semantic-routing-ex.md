@@ -1,292 +1,674 @@
-# Semantic / Intelligent Multi-Model Routing Examples
+# Semantic Model Routing With Agentgateway
 
-**agentgateway OSS + Kubernetes**
+Route LLM traffic to the *right* model per request using agentgateway on Kubernetes: expensive frontier models (Claude Opus 4.8, GPT-5.5) only when the request actually needs them, a cheaper default (Claude Sonnet 5) for everything else. Clients call one stable endpoint; the gateway classifies the request and picks the concrete model.
 
-This document shows practical ways to implement automated, "intelligent" multi-model routing for LLM traffic — for example, detecting that a request represents a "hard task" and routing it to a stronger (more expensive) model like Claude Opus instead of Sonnet.
+agentgateway does not ship a first-party embedding-based semantic classifier. What it ships is the routing machinery:
 
-agentgateway supports two main approaches:
+- **`AgentgatewayBackend`** with an `ai` spec: one backend per model, or **priority groups** for health-based failover.
+- **`HTTPRoute`**: weighted splits and header-based routing across AI backends.
+- **`AgentgatewayPolicy`** with **`phase: PreRouting`**: transformation (CEL) or `extProc` that runs *before* route selection, so a derived intent header can drive the routing decision.
 
-- **CEL (in-policy, no extra components)**: Fast, lightweight heuristics based on prompt length, keywords, structure, etc.
-- **ext_proc (external processor)**: Full request body inspection with arbitrary logic, including calls to small classifiers, embedding models, or LLM-as-judge routers.
+The pattern: a PreRouting policy classifies the request and sets `x-intent`; the HTTPRoute matches on `x-intent` and steers to the right model backend. Swap the CEL classifier for an `extProc` server and the same wiring becomes true semantic routing.x
 
-These examples target Anthropic models (Sonnet ↔ Opus) but apply equally to any providers supported by agentgateway LLM backends.
+## Quick Vocab
 
-Example minimal backend (for reference):
+- **`AgentgatewayBackend`** : a backend definition. For LLMs, `spec.ai.provider.<anthropic|openai|gemini|bedrock|...>` with optional `model` override; `spec.policies.auth.secretRef` for credentials. `spec.ai.groups` instead of `provider` gives priority-ordered provider groups.
+- **`AgentgatewayPolicy`**: attaches traffic policies to a Gateway/route. `spec.traffic.phase: PreRouting` runs the policy before route selection (default is `PostRouting`).
+- **Transformation**: `spec.traffic.transformation.request.set` sets request headers from CEL expressions (request headers, JWT claims, or the request body via `json(request.body)`).
+- **Priority groups**: within a group, providers are weighted automatically by health; if a whole group degrades, traffic shifts to the next group.
 
-```yaml
-# agentgatewaybackend.yaml (simplified)
+## Prerequisites
+
+- A cluster running agentgateway
+
+```bash
+kubectl get gatewayclass agentgateway
+```
+
+- An Anthropic API key and an OpenAI API key
+- `curl` and `jq`
+
+## Step 1: Namespace and provider secrets
+
+The default Secret resolver requires the API key under the `Authorization` key. Export the keys as environment variables and create the Secrets imperatively so keys never land in a manifest file in plain text:
+
+```bash
+export ANTHROPIC_API_KEY='<your-anthropic-key>'
+export OPENAI_API_KEY='<your-openai-key>'
+
+kubectl create ns semantic-routing
+kubectl create secret generic anthropic-secret -n semantic-routing \
+  --from-literal=Authorization="$ANTHROPIC_API_KEY"
+kubectl create secret generic openai-secret -n semantic-routing \
+  --from-literal=Authorization="$OPENAI_API_KEY"
+```
+
+## Step 2: Model backends
+
+One `AgentgatewayBackend` per model tier, plus one failover backend using priority groups. The tiers:
+
+| Backend | Model | Role |
+|---|---|---|
+| `claude-opus` | `claude-opus-4-8` | expensive; only for requests that need it (code) |
+| `gpt-5-5` | `gpt-5.5` | expensive; deep reasoning |
+| `claude-sonnet` | `claude-sonnet-5` | cheaper default for everything else |
+| `gpt-5-mini` | `gpt-5-mini` | cheap OpenAI tier; weighted split and failover fallback |
+
+```bash
+kubectl apply -f - <<EOF
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
-  name: anthropic-llm
-  namespace: default
+  name: claude-opus
+  namespace: semantic-routing
 spec:
   ai:
-    providerGroups:
+    provider:
+      anthropic:
+        model: claude-opus-4-8
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: claude-sonnet
+  namespace: semantic-routing
+spec:
+  ai:
+    provider:
+      anthropic:
+        model: claude-sonnet-5
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: gpt-5-5
+  namespace: semantic-routing
+spec:
+  ai:
+    provider:
+      openai:
+        model: gpt-5.5
+  policies:
+    auth:
+      secretRef:
+        name: openai-secret
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: gpt-5-mini
+  namespace: semantic-routing
+spec:
+  ai:
+    provider:
+      openai:
+        model: gpt-5-mini
+  policies:
+    auth:
+      secretRef:
+        name: openai-secret
+---
+# Failover: group order = priority. If every provider in the first group is
+# degraded, traffic shifts to the next group. Within a group, providers are
+# weighted automatically by health.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: resilient-failover
+  namespace: semantic-routing
+spec:
+  ai:
+    groups:
     - providers:
-      - name: anthropic
+      - name: primary-claude-sonnet
         anthropic:
-          model: claude-3-5-sonnet-20241022   # default / cheap
-        # auth, tls, etc.
-    # Additional priority groups for failover can be added here
-```
-
-## CEL-Based Examples (Pure Policy, No Sidecar)
-
-CEL transformations let you rewrite the request body (including the `model` field) using expressions over the parsed LLM request (`messages`, `system`, `tools`, length, etc.).
-
-### 1. Length-based escalation (long prompt → Opus)
-
-```yaml
+          model: claude-sonnet-5
+    - providers:
+      - name: fallback-gpt-5-mini
+        openai:
+          model: gpt-5-mini
+---
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
-  name: llm-escalate-long
-  namespace: default
+  name: resilient-failover-anthropic-auth
+  namespace: semantic-routing
 spec:
   targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: llm-gateway
-  traffic:
-    transformation:
-      request:
-        # CEL body rewrite. The result replaces the outgoing LLM request body.
-        body: |
-          request + {
-            model: if size(request.messages[0].content) > 1500
-                   then "claude-3-opus-4-7"
-                   else "claude-3-5-sonnet-20241022"
-          }
-```
-
-**How it works**:
-- Inspects the first user message length.
-- Longer prompts (more context/complexity) get the stronger model.
-- Can be combined with `metadata` extraction or conditional policies.
-
-### 2. Keyword + structural complexity heuristic
-
-More sophisticated "task awareness" using prompt content and structure.
-
-```yaml
+  - group: agentgateway.dev/v1alpha1
+    kind: AgentgatewayBackend
+    name: resilient-failover
+    sectionName: primary-claude-sonnet
+  backend:
+    auth:
+      secretRef:
+        name: anthropic-secret
+---
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
-  name: llm-escalate-complex
-  namespace: default
+  name: resilient-failover-openai-auth
+  namespace: semantic-routing
 spec:
   targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: llm-gateway
-  traffic:
-    transformation:
-      request:
-        body: |
-          request + {
-            model: if (
-              request.messages.exists(m,
-                m.content.contains("architecture") ||
-                m.content.contains("multi-step") ||
-                m.content.contains("root cause") ||
-                m.content.contains("tradeoffs") ||
-                m.content.contains("analyze deeply") ||
-                m.content.matches("(?i)\\b(step by step|reason step|prove|formalize)\\b")
-              ) ||
-              size(request.messages) > 8 ||
-              (has(request.tools) && size(request.tools) > 5)
-            )
-            then "claude-3-opus-4-7"
-            else "claude-3-5-sonnet-20241022"
-          }
+  - group: agentgateway.dev/v1alpha1
+    kind: AgentgatewayBackend
+    name: resilient-failover
+    sectionName: fallback-gpt-5-mini
+  backend:
+    auth:
+      secretRef:
+        name: openai-secret
+EOF
 ```
 
-**Alternative (cleaner for single-field overrides)** — using the dedicated AI `transformations`:
+The `model` field on the provider overrides whatever model the client sends. The backend *is* the model choice, which is what lets the route decide.
 
-```yaml
+## Step 3: Gateway and routes
+
+Three "virtual models", one hostname each:
+
+| Hostname | Behavior |
+|---|---|
+| `smart.demo.internal` | intent-based: `x-intent: code` → claude-opus-4-8, `x-intent: deep-reasoning` → gpt-5.5, default → claude-sonnet-5 (cheaper) |
+| `fast.demo.internal` | weighted 80/20 split: claude-sonnet-5 / gpt-5-mini |
+| `resilient.demo.internal` | priority-group failover backend |
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: semantic-routing
+  namespace: semantic-routing
 spec:
-  # ... targetRefs ...
-  traffic:
-    transformation:
-      request:
-        # You can also attach AI-specific field transforms when the policy
-        # context includes ai configuration (or via backend policies).
-        # The AI FieldTransformation is optimized for LLM request bodies.
-  # Example AI-style (when supported in your policy attachment point):
-  # ai:
-  #   transformations:
-  #   - field: model
-  #     expression: |
-  #       if ( ... same condition ... ) then "claude-3-opus-4-7" else "claude-3-5-sonnet-20241022"
+  gatewayClassName: agentgateway
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 8080
+    allowedRoutes:
+      namespaces:
+        from: Same
+---
+# "smart": intent-based routing. x-intent is set by the PreRouting policy in
+# Step 4 before this route match is evaluated.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: smart
+  namespace: semantic-routing
+spec:
+  parentRefs:
+  - name: semantic-routing
+  hostnames:
+  - smart.demo.internal
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+      headers:
+      - name: x-intent
+        value: code
+    backendRefs:
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: claude-opus
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+      headers:
+      - name: x-intent
+        value: deep-reasoning
+    backendRefs:
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: gpt-5-5
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    backendRefs:
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: claude-sonnet
+---
+# "fast": weighted split across two cheap models.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: fast
+  namespace: semantic-routing
+spec:
+  parentRefs:
+  - name: semantic-routing
+  hostnames:
+  - fast.demo.internal
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    backendRefs:
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: claude-sonnet
+      weight: 80
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: gpt-5-mini
+      weight: 20
+---
+# "resilient": health-based failover via the priority-group backend.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: resilient
+  namespace: semantic-routing
+spec:
+  parentRefs:
+  - name: semantic-routing
+  hostnames:
+  - resilient.demo.internal
+  rules:
+  - matches:
+    - path:
+        type: PathPrefix
+        value: /v1/chat/completions
+    backendRefs:
+    - group: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      name: resilient-failover
+EOF
 ```
 
-**Tips for CEL**:
-- Use `conditional` under `TransformationOrConditional` for multiple rules with fallbacks.
-- Combine with prompt guards or enrichment policies.
-- CEL has full access to the normalized LLM request shape.
+## Step 4: PreRouting intent classifier
 
-## ext_proc Examples (External Processor)
+This is the piece that makes it "semantic". `phase: PreRouting` runs the transformation *before* the HTTPRoute match, so the header it sets participates in routing. The CEL below respects a client-supplied `x-intent` and otherwise derives intent from the prompt content:
 
-`ext_proc` gives you the **full raw request body** (and headers) before the gateway does provider selection or upstream call. Perfect for real intelligence (classifiers, embeddings, small router models).
-
-Configure via `traffic.extProc` (recommended in `phase: PreRouting`).
-
-### 3. Basic heuristic ext_proc router
-
-**Policy** (attaches the processor):
-
-```yaml
+```bash
+kubectl apply -f - <<EOF
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
-  name: llm-smart-router-basic
-  namespace: default
+  name: intent-classifier
+  namespace: semantic-routing
 spec:
   targetRefs:
   - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: llm-gateway
+    kind: Gateway
+    name: semantic-routing
+  traffic:
+    phase: PreRouting
+    transformation:
+      request:
+        set:
+        - name: x-intent
+          value: >-
+            "x-intent" in request.headers ? request.headers["x-intent"] :
+            (json(request.body).messages.exists(m, m.content.contains("code") || m.content.contains("function")) ? "code" :
+            (json(request.body).messages.exists(m, m.content.contains("prove") || m.content.contains("theorem")) ? "deep-reasoning" : "general"))
+EOF
+```
+
+Keyword CEL is deliberately simple; it's a stand-in for the classifier. The same PreRouting slot accepts an `extProc` policy instead, which is how you plug in a real semantic classifier (see [the ladder](#from-keyword-cel-to-true-semantic-routing)).
+
+This mirrors the pattern agentgateway uses in its own e2e suite: a PreRouting policy sets a header from a JWT claim (`jwt.tier`) and the HTTPRoute routes premium users to a different backend (`ent-controller/test/e2e/features/agentgateway/policies/testdata/jwt-transform-routing-policy.yaml`).
+
+## Step 5: Verify status
+
+```bash
+kubectl get agentgatewaybackends,httproutes,gateway -n semantic-routing
+kubectl get agentgatewaypolicies -n semantic-routing
+```
+
+Expect every backend `ACCEPTED: True`, the Gateway `PROGRAMMED: True` (a proxy pod and a LoadBalancer Service appear in the namespace), and all three policies (`intent-classifier` plus the two failover auth policies) `ACCEPTED: True / ATTACHED: True`.
+
+## Step 6: Send traffic
+
+Port-forward (or use the LoadBalancer address once assigned):
+
+```bash
+kubectl port-forward -n semantic-routing svc/semantic-routing 8080:8080 &
+```
+
+Intent-based routing: same endpoint, different models.
+
+- Explicit intent header: escalates to the expensive model -> claude-opus-4-8
+- No header; the PreRouting CEL classifier detects "prove" -> gpt-5.5
+- Generic prompt: stays on the cheaper default -> claude-sonnet-5
+```bash
+
+curl -s http://35.229.54.135:8080/v1/chat/completions \
+  -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
+  -H 'x-intent: code' \
+  -d '{"model":"any","messages":[{"role":"user","content":"write a binary search in Go"}]}' | jq -r .model
+
+curl -s http://35.229.54.135:8080/v1/chat/completions \
+  -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
+  -d '{"model":"any","messages":[{"role":"user","content":"prove sqrt(2) is irrational"}]}' | jq -r .model
+
+curl -s http://35.229.54.135:8080/v1/chat/completions \
+  -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
+  -d '{"model":"any","messages":[{"role":"user","content":"say hi"}]}' | jq -r .model
+```
+
+The response `model` field shows the concrete model that served the request (the backend's `model` override wins regardless of what the client sent).
+
+Weighted split (~80/20 over 10 calls):
+
+```bash
+for i in $(seq 1 10); do
+  curl -s http://35.229.54.135:8080/v1/chat/completions \
+    -H 'Host: fast.demo.internal' -H 'content-type: application/json' \
+    -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}' | jq -r .model
+done | sort | uniq -c
+```
+
+Failover serves from `claude-sonnet-5` (priority group 0) while healthy, shifting to `gpt-5-mini` if Anthropic degrades:
+
+```bash
+curl -s http://35.229.54.135:8080/v1/chat/completions \
+  -H 'Host: resilient.demo.internal' -H 'content-type: application/json' \
+  -d '{"model":"any","messages":[{"role":"user","content":"hi"}]}' | jq -r .model
+```
+
+## From Keyword CEL To True Semantic Routing
+
+Three rungs, all using the same HTTPRoute wiring; only the classifier changes:
+
+1. **Client-declared intent**: the app sends `x-intent` itself. Zero gateway logic; you trust the caller.
+2. **Gateway CEL heuristics** (this demo): PreRouting transformation derives `x-intent` from headers, JWT claims, or `json(request.body)`. Deterministic, no extra hops, limited semantics.
+3. **External classifier via `extProc`** (built below): replace `transformation` with `extProc` in the same PreRouting policy, pointing at a gRPC classifier service. The processor inspects the prompt, sets `x-intent`, and route matching proceeds on the mutated request. Enterprise WAF is built on this exact hook, and `extProc` also supports CEL-conditional execution (`conditional` entries) to run different classifiers for different traffic.
+
+The rest of this section builds rung 3 end to end: a small Go ext_proc classifier, deployed next to the gateway, wired in with a PreRouting `extProc` policy. The classifier here scores regex signals (a stand-in you can demo anywhere); `classify()` is the single function you swap for an embedding model, and the vLLM Semantic Router speaks the same ext_proc protocol if you want a production drop-in.
+
+### Rung 3a: the classifier
+
+The server implements Envoy's `ext_proc` v3 protocol: agentgateway streams it the request headers and (buffered) body, and it answers the body phase with a header mutation that sets `x-intent`.
+
+```bash
+mkdir -p semantic-classifier && cd semantic-classifier
+
+cat <<'EOF' > main.go
+// semantic-classifier: an Envoy ext_proc gRPC server that classifies the
+// intent of an OpenAI-style chat request and sets an x-intent header that
+// agentgateway routes on. Swap classify() for a real embedding model (or
+// point the gateway at vLLM Semantic Router) without touching the wiring.
+package main
+
+import (
+	"encoding/json"
+	"io"
+	"log"
+	"net"
+	"regexp"
+	"strings"
+
+	corev3 "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
+	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
+	"google.golang.org/grpc"
+)
+
+var (
+	codeRe = regexp.MustCompile(`(?i)(stack trace|traceback|exception|error:|segfault|debug|refactor|unit test|regex|compile|null pointer|func |def |class |` + "```" + `)`)
+	reasonRe = regexp.MustCompile(`(?i)(prove|theorem|derive|step[- ]by[- ]step|formal|trade-?offs?|from first principles)`)
+)
+
+type chatRequest struct {
+	Messages []struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	} `json:"messages"`
+}
+
+// classify returns the intent for a chat-completions request body.
+// This is the swappable part: replace with an embedding lookup or a
+// small classification model for true semantic routing.
+func classify(body []byte) string {
+	text := string(body)
+	var req chatRequest
+	if err := json.Unmarshal(body, &req); err == nil && len(req.Messages) > 0 {
+		var parts []string
+		for _, m := range req.Messages {
+			if m.Role != "user" {
+				continue
+			}
+			var s string
+			if err := json.Unmarshal(m.Content, &s); err == nil {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) > 0 {
+			text = strings.Join(parts, "\n")
+		}
+	}
+	switch {
+	case codeRe.MatchString(text):
+		return "code"
+	case reasonRe.MatchString(text):
+		return "deep-reasoning"
+	default:
+		return "general"
+	}
+}
+
+type server struct{}
+
+func (s *server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error {
+	for {
+		req, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		var resp *extprocv3.ProcessingResponse
+		switch v := req.Request.(type) {
+		case *extprocv3.ProcessingRequest_RequestBody:
+			intent := classify(v.RequestBody.GetBody())
+			log.Printf("classified request as %q", intent)
+			resp = &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_RequestBody{
+					RequestBody: &extprocv3.BodyResponse{
+						Response: &extprocv3.CommonResponse{
+							HeaderMutation: &extprocv3.HeaderMutation{
+								SetHeaders: []*corev3.HeaderValueOption{{
+									Header: &corev3.HeaderValue{
+										Key:      "x-intent",
+										RawValue: []byte(intent),
+									},
+									AppendAction: corev3.HeaderValueOption_OVERWRITE_IF_EXISTS_OR_ADD,
+								}},
+							},
+						},
+					},
+				},
+			}
+		case *extprocv3.ProcessingRequest_RequestHeaders:
+			resp = &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_RequestHeaders{
+					RequestHeaders: &extprocv3.HeadersResponse{},
+				},
+			}
+		case *extprocv3.ProcessingRequest_ResponseHeaders:
+			resp = &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_ResponseHeaders{
+					ResponseHeaders: &extprocv3.HeadersResponse{},
+				},
+			}
+		case *extprocv3.ProcessingRequest_ResponseBody:
+			resp = &extprocv3.ProcessingResponse{
+				Response: &extprocv3.ProcessingResponse_ResponseBody{
+					ResponseBody: &extprocv3.BodyResponse{},
+				},
+			}
+		default:
+			continue
+		}
+
+		if err := stream.Send(resp); err != nil {
+			return err
+		}
+	}
+}
+
+func main() {
+	lis, err := net.Listen("tcp", ":9000")
+	if err != nil {
+		log.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	extprocv3.RegisterExternalProcessorServer(grpcServer, &server{})
+	log.Println("semantic-classifier listening on :9000")
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("serve: %v", err)
+	}
+}
+EOF
+
+cat <<'EOF' > Dockerfile
+FROM golang:1.26 AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY main.go ./
+RUN CGO_ENABLED=0 go build -o /semantic-classifier .
+
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /semantic-classifier /semantic-classifier
+EXPOSE 9000
+ENTRYPOINT ["/semantic-classifier"]
+EOF
+```
+
+(Verified with `github.com/envoyproxy/go-control-plane/envoy` v1.37.0 and `google.golang.org/grpc` v1.82.0; `go mod tidy` pins them in `go.sum`.)
+
+### Rung 3b: build and push
+
+Push to any registry the cluster can pull from (GAR/ECR/ghcr):
+
+```bash
+export IMAGE='<your-registry>/semantic-classifier:0.1.0'
+
+go mod init semantic-classifier
+go mod tidy
+go build .          # sanity check before the image build
+
+docker build -t "$IMAGE" .
+docker push "$IMAGE"
+```
+
+### Rung 3c: deploy the classifier
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: semantic-classifier
+  namespace: semantic-routing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: semantic-classifier
+  template:
+    metadata:
+      labels:
+        app: semantic-classifier
+    spec:
+      containers:
+      - name: classifier
+        image: ${IMAGE}
+        ports:
+        - containerPort: 9000
+        readinessProbe:
+          tcpSocket:
+            port: 9000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: semantic-classifier
+  namespace: semantic-routing
+spec:
+  selector:
+    app: semantic-classifier
+  ports:
+  - name: grpc
+    port: 9000
+    targetPort: 9000
+    appProtocol: grpc
+EOF
+```
+
+### Rung 3d: swap the CEL policy for extProc
+
+Remove the CEL classifier so the two PreRouting policies don't fight over `x-intent`, then attach the extProc policy. `requestBodyMode: Buffered` makes agentgateway send the full request body before route selection, which is what lets the classifier see the prompt:
+
+```bash
+kubectl delete gentgatewaypolicy intent-classifier -n semantic-routing
+
+kubectl apply -f - <<EOF
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: semantic-classifier
+  namespace: semantic-routing
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: Gateway
+    name: semantic-routing
   traffic:
     phase: PreRouting
     extProc:
       backendRef:
-        group: ""
-        kind: Service
-        name: llm-router-extproc
-        port: 50051
+        name: semantic-classifier
+        port: 9000
       processingOptions:
-        requestHeaderMode: SEND
-        requestBodyMode: BUFFERED   # Required to see the full prompt
-        # responseBodyMode not needed for model selection
+        requestBodyMode: Buffered
+        responseBodyMode: None
+        responseHeaderMode: Skip
+EOF
 ```
 
-**Minimal Python ext_proc implementation** (gRPC, using standard Envoy ext_proc messages):
+The HTTPRoutes from Step 3 are untouched; only who sets `x-intent` changed.
 
-```python
-# llm_router_extproc.py
-import grpc
-import json
-from concurrent import futures
+### Rung 3e: prove it beats keyword CEL
 
-# Import the generated stubs (envoy.service.ext_proc.v3)
-import external_processor_pb2 as ext_proc
-import external_processor_pb2_grpc
-
-class LLMRouter(ext_proc.ExternalProcessorServicer):
-    def Process(self, request_iterator, context):
-        for req in request_iterator:
-            if req.HasField("request_body"):
-                original = json.loads(req.request_body.body)
-                messages = original.get("messages", [])
-                text = " ".join(
-                    str(m.get("content", "")) 
-                    for m in messages 
-                    if isinstance(m.get("content"), (str, dict))
-                )
-
-                # === Your heuristic "intelligence" here ===
-                is_hard = (
-                    len(text) > 1200 or
-                    any(kw in text.lower() for kw in [
-                        "architecture", "tradeoff", "multi-step", 
-                        "root cause", "formal proof", "analyze deeply"
-                    ])
-                )
-
-                new_model = "claude-3-opus-4-7" if is_hard else "claude-3-5-sonnet-20241022"
-                original["model"] = new_model
-
-                resp = ext_proc.ProcessingResponse()
-                resp.request_body.response = ext_proc.CommonResponse(
-                    body_mutation=ext_proc.BodyMutation(
-                        body=json.dumps(original).encode("utf-8")
-                    )
-                )
-                yield resp
-            else:
-                # Pass through everything else
-                yield ext_proc.ProcessingResponse()
-
-def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    ext_proc_grpc.add_ExternalProcessorServicer_to_server(LLMRouter(), server)
-    server.add_insecure_port("[::]:50051")
-    server.start()
-    print("LLM router ext_proc listening on 50051")
-    server.wait_for_termination()
-
-if __name__ == "__main__":
-    serve()
-```
-
-Deploy this as a normal `Deployment` + `Service` (or sidecar). It only needs to speak gRPC ext_proc.
-
-### 4. Intelligent router with external classifier / embeddings
-
-Same policy YAML as above (just point `backendRef` at your smarter service).
-
-In the processor, call out to real intelligence:
-
-```python
-# ... same Process loop ...
-full_prompt = build_full_prompt(messages, system=...)   # your helper
-
-# Option A: Small classifier service (e.g. mmbert-style or fine-tuned)
-complexity_score = call_classifier_service(full_prompt)  # returns 0.0–1.0
-
-# Option B: Embedding + prototype / KNN (as referenced in advanced agentgateway configs)
-# embedding = embed(full_prompt)
-# complexity_score = knn_score_against_prototypes(embedding)
-
-# Option C: Tiny router LLM call (cheap model)
-# decision = call_router_model(full_prompt, candidates=["sonnet", "opus"])
-
-if complexity_score > 0.75 or is_multi_hop(full_prompt):
-    chosen_model = "claude-3-opus-4-7"
-    reason = f"high-complexity:{complexity_score:.2f}"
-else:
-    chosen_model = "claude-3-5-sonnet-20241022"
-    reason = "standard"
-
-original["model"] = chosen_model
-
-resp = ext_proc.ProcessingResponse()
-resp.request_body.response = ext_proc.CommonResponse(
-    body_mutation=ext_proc.BodyMutation(body=json.dumps(original).encode()),
-    # You can also return dynamic metadata for logging/tracing
-)
-# Optionally set headers:
-# resp.request_body.response.header_mutation.set_headers.append(...)
-yield resp
-```
-
-**Advanced ideas for this router**:
-- Integrate the embedding models and complexity prototype scoring from the agentgateway `models/` and advanced `config.yaml` examples.
-- Use semantic cache hits to short-circuit.
-- For self-hosted models, mutate to target a specific `InferencePool` or return routing decisions via headers/body.
-- Add caching + replay (see `router_replay` patterns in advanced configs).
-
-## Applying and Testing
+This prompt contains none of the CEL keywords (`code`, `function`, `prove`, `theorem`), so rung 2 would have sent it to the cheap default. The classifier recognizes `stack trace` and escalates it to `claude-opus-4-8`:
 
 ```bash
-kubectl apply -f llm-escalate-long.yaml
-kubectl apply -f llm-smart-router-basic.yaml
-# ... etc
+curl -s http://localhost:8080/v1/chat/completions \
+  -H 'Host: smart.demo.internal' -H 'content-type: application/json' \
+  -d '{"model":"any","messages":[{"role":"user","content":"why does my app keep crashing? here is the stack trace"}]}' | jq -r .model
 ```
 
-Test:
+Watch the classification decisions live:
 
 ```bash
-curl -X POST http://<gateway>/v1/messages \
-  -H "content-type: application/json" \
-  -d '{
-    "model": "claude-3-5-sonnet-20241022",
-    "messages": [{"role":"user", "content": "Design a distributed caching layer for a global e-commerce platform with strong consistency requirements and analyze the tradeoffs..."}]
-  }'
+kubectl logs -n semantic-routing deploy/semantic-classifier -f
+# classified request as "code"
 ```
 
-Inspect:
-- Gateway/proxy logs (look for model actually used).
-- Add a header in the transformation/ext_proc (e.g. `x-chosen-model`) for easy debugging.
-- Prometheus metrics + traces will reflect the chosen model.
+## Cleanup
+
+```bash
+kubectl delete namespace semantic-routing
+```
+
+This removes the Gateway (and its LoadBalancer), all backends, routes, policies, and secrets.

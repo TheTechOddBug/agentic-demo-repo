@@ -487,12 +487,21 @@ Both follow the same architectural signature: the sandbox runs *inside* an
 ordinary worker pod under Substrate's own control, rather than underneath the
 pod via `runtimeClassName`.
 
-Why skip the RuntimeClass + Kata shim path this doc just demoed? Because the
-Kata shim doesn't expose checkpoint/restore, and suspend/resume is Substrate's
-core feature. So Substrate uses Kata's *guest* components (the guest kernel
-and Kata Agent) but drives Cloud Hypervisor directly through its own runtime
-(`ateom-microvm`), giving it control of VM snapshots: memory-only checkpoints
-with userfaultfd on-demand restore (~75 ms resumes vs ~1.8 s eager).
+Why skip the RuntimeClass + Kata shim path this doc just demoed? Because for
+agent workloads, Substrate gets you strictly more. A plain Kata pod gives you
+hardware isolation, but that's all it gives you: every idle agent still holds
+a full microVM (and its memory overhead) on a node, and the only lifecycle
+operations you have are create and delete. Kill the pod and the agent's
+in-memory state is gone. Substrate combines the same hardware isolation with
+the ability to suspend an agent, snapshot its full RAM state to object
+storage, release the worker entirely, and resume it later (even on a
+different node) in about 75 ms via userfaultfd on-demand restore, versus
+~1.8 s for an eager restore. Idle agents cost nothing but storage. The Kata
+shim has no snapshot API, so Substrate kept Kata's guest components (the
+guest kernel and Kata Agent), dropped the shim, and drives Cloud Hypervisor
+directly through its own runtime (`ateom-microvm`). The result: microVM-grade
+isolation per agent, with the density and suspend/resume economics that
+stateless Kata pods can't match.
 
 The takeaway: RuntimeClass is how *Kubernetes* selects a microVM runtime per
 pod, but it's not the only way microVMs show up in a cluster. Platforms that

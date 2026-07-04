@@ -343,6 +343,8 @@ Port-forward (or use the LoadBalancer address once assigned):
 kubectl port-forward -n semantic-routing svc/semantic-routing 8080:8080 &
 ```
 
+OR
+
 ```bash
 export INGRESS_GW_ADDRESS=$(kubectl get svc -n semantic-routing semantic-routing -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
 echo $INGRESS_GW_ADDRESS

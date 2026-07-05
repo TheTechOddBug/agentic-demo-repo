@@ -453,8 +453,6 @@ config:
             - type: domain
               name: math
             - type: domain
-              name: physics
-            - type: domain
               name: philosophy
         modelRefs:
           - model: claude-opus-4-8
@@ -465,7 +463,7 @@ helm upgrade semantic-router oci://ghcr.io/vllm-project/charts/semantic-router \
   --version v0.0.0-latest \
   --namespace semantic-routing \
   -f vsr-values.yaml \
-  --set persistence.storageClassName="-"
+  --set persistence.storageClassName=default
 
 kubectl wait --for=condition=Available deployment/semantic-router \
   -n semantic-routing --timeout=600s
@@ -519,7 +517,9 @@ The `smart`/`fast`/`resilient` routes from Step 3 are untouched; `semantic.demo.
 
 ### Rung 3c: attach the extProc policy
 
-`requestBodyMode: Buffered` sends the router the full prompt to classify; buffered response mode lets it stamp its `x-vsr-*` decision headers on the response. Note what's *absent*: no `phase: PreRouting`. The router rewrites the body rather than steering the route, so the default PostRouting phase — scoped to just this HTTPRoute — is the right attachment point:
+`requestBodyMode: Buffered` sends the router the full prompt to classify; buffered response mode lets it stamp its `x-vsr-*` decision headers on the response. Note what's *absent*: no `phase: PreRouting`. The router rewrites the body rather than steering the route, so the default PostRouting phase — scoped to just this HTTPRoute — is the right attachment point.
+
+The way this is done is via the `backendRef` below. If you run `kubectl get svc -n semantic-routing`, you will see that Service running. It's deployed with the vLLM Semantic Router Helm Chart.
 
 ```bash
 kubectl apply -f - <<EOF
@@ -549,17 +549,28 @@ EOF
 
 Buffered body modes disable streaming responses; if you need `stream: true`, use `FullDuplexStreamed` instead.
 
-### Rung 3d: prove it beats keyword CEL
+### Rung 3d: Auto Testing
 
 Clients send `"model": "auto"` and the router substitutes its decision. This prompt contains none of the rung-2 CEL keywords (`code`, `function`, `prove`, `theorem`), so the keyword classifier would have kept it on the cheap default — the embedding classifier recognizes a `computer science` prompt and escalates it:
 
 ```bash
-curl -s http://localhost:8080/v1/chat/completions \
+kubectl port-forward -n semantic-routing svc/semantic-routing 8080:8080 &
+```
+
+OR
+
+```bash
+export INGRESS_GW_ADDRESS=$(kubectl get svc -n semantic-routing semantic-routing -o jsonpath="{.status.loadBalancer.ingress[0]['hostname','ip']}")
+echo $INGRESS_GW_ADDRESS
+```
+
+```bash
+curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: semantic.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"auto","messages":[{"role":"user","content":"why does my app keep crashing? here is the stack trace"}]}' | jq -r .model
 # claude-opus-4-8
 
-curl -s http://localhost:8080/v1/chat/completions \
+curl -s http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: semantic.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"auto","messages":[{"role":"user","content":"say hi"}]}' | jq -r .model
 # claude-sonnet-5
@@ -568,7 +579,7 @@ curl -s http://localhost:8080/v1/chat/completions \
 The router's decision metadata comes back as response headers:
 
 ```bash
-curl -s -D - -o /dev/null http://localhost:8080/v1/chat/completions \
+curl -s -D - -o /dev/null http://$INGRESS_GW_ADDRESS:8080/v1/chat/completions \
   -H 'Host: semantic.demo.internal' -H 'content-type: application/json' \
   -d '{"model":"auto","messages":[{"role":"user","content":"what is the derivative of x^3?"}]}' | grep -i x-vsr
 # x-vsr-selected-category: math

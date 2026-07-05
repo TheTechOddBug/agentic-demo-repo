@@ -1,0 +1,48 @@
+config:
+  version: v0.3
+  listeners: []
+  providers:
+    defaults:
+      default_model: claude-sonnet-5   # cheap default for everything else
+    models:
+      - name: claude-opus-4-8
+        backend_refs:
+          - name: anthropic
+            endpoint: api.anthropic.com:443
+            weight: 1
+      - name: claude-sonnet-5
+        backend_refs:
+          - name: anthropic
+            endpoint: api.anthropic.com:443
+            weight: 1
+  routing:
+    modelCards:
+      - name: claude-opus-4-8
+        modality: text
+      - name: claude-sonnet-5
+        modality: text
+    decisions:
+      - name: code
+        description: Programming, debugging, and software engineering requests
+        priority: 10
+        rules:
+          operator: OR
+          conditions:
+            - type: domain
+              name: computer science
+        modelRefs:
+          - model: claude-opus-4-8
+            use_reasoning: false
+      - name: deep-reasoning
+        description: Proofs, derivations, and formal analysis
+        priority: 10
+        rules:
+          operator: OR
+          conditions:
+            - type: domain
+              name: math
+            - type: domain
+              name: philosophy
+        modelRefs:
+          - model: claude-opus-4-8
+            use_reasoning: false

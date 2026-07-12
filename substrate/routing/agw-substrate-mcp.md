@@ -1,5 +1,5 @@
 
-# agentgateway + Agent Substrate: Scale-to-Zero MCP Tools
+# agentgateway + Agent Substrate: Route An MCP Server and Scale
 
 "An MCP Tool Server That Exists Only When Called" is the gist of this lab.
 

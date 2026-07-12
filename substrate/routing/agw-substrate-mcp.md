@@ -534,6 +534,16 @@ time curl -sS "${MCP_HEADERS[@]}" -H "Mcp-Session-Id: $MCP_SID" \
 This is the baseline: agentgateway's MCP handling plus two HTTP proxies,
 with no actor restore in the path.
 
+You can ensure that the traffic is going through agentgateway by looking at the logs.
+
+```bash
+kubectl logs mcp-substrate-gateway-xxxx-xxxx -n mcp-substrate
+
+2026-07-12T20:26:37.149854Z     info    request gateway=mcp-substrate/mcp-substrate-gateway listener=http route=mcp-substrate/substrate-mcp src.addr=127.0.0.1:45314 http.method=POST http.host=localhost http.path=/mcp http.version=HTTP/1.1 http.status=200 protocol=mcp mcp.method.name=tools/list mcp.session.id=ck5HjlyZpIouulDAq4oG4E0NikEY3vn7/UgTutxdMGS4rSc3nYLVIRtGg07C3gFcQe9Wu+TswukRUMkIKxJel4E9wYBCYuQ60mcmhT6twVM3uq/QujzvRkJ4qy1noYWad1+UTY9RH89juEM= duration=64ms
+2026-07-12T20:28:00.857219Z     info    request gateway=mcp-substrate/mcp-substrate-gateway listener=http route=mcp-substrate/substrate-mcp src.addr=127.0.0.1:56158 http.method=POST http.host=localhost http.path=/mcp http.version=HTTP/1.1 http.status=200 protocol=mcp mcp.method.name=tools/call mcp.target=everything mcp.resource.type=tool gen_ai.tool.name=echo mcp.session.id=ck5HjlyZpIouulDAq4oG4E0NikEY3vn7/UgTutxdMGS4rSc3nYLVIRtGg07C3gFcQe9Wu+TswukRUMkIKxJel4E9wYBCYuQ60mcmhT6twVM3uq/QujzvRkJ4qy1noYWad1+UTY9RH89juEM= duration=69ms
+2026-07-12T20:28:36.821233Z     info    request gateway=mcp-substrate/mcp-substrate-gateway listener=http route=mcp-substrate/substrate-mcp src.addr=127.0.0.1:35964 http.method=POST http.host=localhost http.path=/mcp http.version=HTTP/1.1 http.status=200 protocol=mcp mcp.method.name=tools/call mcp.target=everything mcp.resource.type=tool gen_ai.tool.name=echo mcp.session.id=ck5HjlyZpIouulDAq4oG4E0NikEY3vn7/UgTutxdMGS4rSc3nYLVIRtGg07C3gFcQe9Wu+TswukRUMkIKxJel4E9wYBCYuQ60mcmhT6twVM3uq/QujzvRkJ4qy1noYWad1+UTY9RH89juEM= duration=1556ms
+```
+
 ---
 
 # Part 2: Scale

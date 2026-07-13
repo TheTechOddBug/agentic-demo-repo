@@ -108,7 +108,7 @@ uses the `ate-system/atelet` Workload Identity principal, so a pool without
 `Provided scope(s) are not authorized`:
 
 ```bash
-export SUBSTRATE_NODE_POOL="substrate-gvisor"
+export SUBSTRATE_NODE_POOL=""
 
 gcloud container node-pools describe "$SUBSTRATE_NODE_POOL" \
   --cluster="$CLUSTER_NAME" \
@@ -198,6 +198,8 @@ printf 'MCP_IMAGE=%s\n' "$MCP_IMAGE"
 For release `2026.7.4`, the validated image contains
 `node /app/dist/index.js streamableHttp` and serves the session-based MCP
 endpoint at `/mcp`.
+
+**Why The Pause Container?**: it's not related to Substrate's suspend/"pause actor" feature despite the name collision — it's sandbox plumbing, the actor-runtime equivalent of the Pod infra container, and the field is required because runsc needs a root container to build the sandbox around. What the pause container is for — structure while the actor is running (and inside the snapshot). A gVisor sandbox needs one root container to anchor the sandbox, its network namespace, and any durable-dir mounts. The pause container is that anchor; your MCP server runs as an app container inside it. When the actor suspends, the pause container is checkpointed along with everything else; when it resumes, it's restored along with everything else. It's cargo, not the crane.
 
 ---
 
@@ -312,6 +314,15 @@ kubectl run actor-dns-check --rm -i --restart=Never \
 
 The returned address is the router Service, not a worker IP. The worker is
 chosen only when a request arrives.
+
+> **A `SERVFAIL` here is expected and fine.** busybox `nslookup` queries both
+> A (IPv4) and AAAA (IPv6) records. The atenet DNS server only answers A
+> queries for the actor domain (its CoreDNS config defines a `template IN A`
+> block and nothing for AAAA), so the AAAA half fails with `SERVFAIL` and
+> busybox exits non-zero — which also makes the pod report
+> `terminated (Error)`. As long as the output includes a `Name:`/`Address:`
+> block resolving the actor name to an IPv4 address, the check passed.
+> Nothing in the request path uses IPv6; agentgateway routes over IPv4.
 
 You'll see in the next section that `everything.tools.actors.resources.substrate.ate.dev` (the DNS name) is used in the `AgentgatewayBackend` so traffic can be routed to the MCP Server running in the Substrate Actor
 

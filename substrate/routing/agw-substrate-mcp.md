@@ -349,7 +349,7 @@ metadata:
   name: mcp-substrate-gateway
   namespace: mcp-substrate
 spec:
-  gatewayClassName: agentgateway
+  gatewayClassName: enterprise-agentgateway
   listeners:
   - name: http
     protocol: HTTP
@@ -358,8 +358,8 @@ spec:
       namespaces:
         from: Same
 ---
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
 metadata:
   name: substrate-mcp
   namespace: mcp-substrate
@@ -392,8 +392,8 @@ spec:
       kind: AgentgatewayBackend
       name: substrate-mcp
 ---
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayPolicy
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
 metadata:
   name: substrate-actor-host
   namespace: mcp-substrate

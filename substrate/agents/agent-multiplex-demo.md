@@ -1,6 +1,5 @@
 ---
 title: "Agent Substrate: Multiplexing Claude Code Agents Onto Fewer Pods"
-date: 2026-07-11
 description: >
   A hands-on lab running real Claude Code agents as Substrate actors: three
   agents share a two-pod WorkerPool, Substrate suspends the idle one, and a

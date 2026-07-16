@@ -90,8 +90,6 @@ Source the environment used to install Substrate:
 
 ```bash
 source .ate-dev-env.sh
-
-kubectl config current-context
 ```
 
 If the counter demo is not yet deployed (no `ate-demo-counter` namespace on
@@ -138,7 +136,6 @@ helm repo update prometheus-community
 
 helm upgrade --install monitoring \
   prometheus-community/kube-prometheus-stack \
-  --version 87.16.1 \
   --namespace monitoring --create-namespace \
   --set alertmanager.enabled=false \
   --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
@@ -207,29 +204,16 @@ EOF
 Port-forward Prometheus and confirm the targets are up:
 
 ```bash
-kubectl -n monitoring port-forward \
-  svc/monitoring-kube-prometheus-prometheus 9090:9090 &
+kubectl -n monitoring port-forward svc/monitoring-kube-prometheus-prometheus 9090:9090
 ```
 
-Open [http://localhost:9090/targets](http://localhost:9090/targets). Under
-**Status > Targets**, `podMonitor/monitoring/substrate-services` should show
-one `UP` endpoint for `ate-api-server`, one for `atenet-router`, and one for
-`atelet` per **eligible, running DaemonSet pod** (a single-node cluster shows
-three total), plus one under `podMonitor/monitoring/substrate-envoy`.
+Open [http://localhost:9090/targets](http://localhost:9090/targets).
 
-Quick data smoke-test from the expression browser — expect series within one
-scrape interval (15s), because the golden-snapshot build already exercised the
-atelet RPCs. (Counters live in process memory: a recently restarted atelet
-starts from zero and only shows methods called since the restart.)
+Paste the following and you will see calls to Substrate:
 
-```promql
-rpc_server_call_duration_seconds_count
+```bash
+rpc_server_call_duration_seconds_count 
 ```
-
-> **Don't expect `atenet_router_route_duration_seconds` yet.** OpenTelemetry
-> instruments only appear on `/metrics` after their first recording, so the
-> router series materializes with the first request routed to an actor
-> (Step 4 onward).
 
 ## Step 3: Provision The Grafana Dashboard
 
@@ -347,25 +331,36 @@ data:
 EOF
 ```
 
-Port-forward Grafana and log in (`admin` / the chart-managed password):
+Port-forward Grafana
 
 ```bash
-kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80 &
+kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+```
 
+Open the Grafana dashboard: [http://localhost:3000](http://localhost:3000)
+
+login is (`admin` / the chart-managed password):
+
+```bash
 kubectl get secret monitoring-grafana -n monitoring \
   -o jsonpath='{.data.admin-password}' | base64 -d; echo
 ```
 
-Open [http://localhost:3000](http://localhost:3000) and find
-**Agent Substrate Observability** under Dashboards (the sidecar picks the
-ConfigMap up within about a minute). Most panels stay empty until traffic
-flows — that's Step 5.
+You'll find the **Agent Substrate Observability** dashboard under Grafanas dashboards.
+
+Sidenote: Most panels stay empty until traffic flows, which is Step 5. In
+particular, the percentile panels (routing latency, Envoy p95, restore p95)
+show **no line at all** at zero traffic: `histogram_quantile` over a zero
+rate returns `NaN`, which Grafana renders as empty. Only the counter-rate
+panels draw a flat zero line while idle. Use the dashboard's 30-minute time
+range during the run — a 24-hour window compresses the ten-minute load run
+into a sliver.
 
 Scoping note — the panels deliberately mix two scopes:
 
 - **Template-scoped to `ate-demo-counter/counter`**: routing latency and
-  snapshot file size, so they aggregate the same population as Step 7's
-  focused queries and Step 8's client comparison.
+  snapshot file size, so they aggregate the same population as Step 6's
+  focused queries and Step 7's client comparison.
 - **Platform-wide, on purpose**: *Routing outcomes* — template labels are
   only populated once `ResumeActor` succeeds
   (`cmd/atenet/internal/router/extproc.go`), so invalid hosts, missing
@@ -400,7 +395,9 @@ Create the namespace and benchmark client:
 ```bash
 kubectl create namespace "$OBS_NAMESPACE" \
   --dry-run=client -o yaml | kubectl apply -f -
+```
 
+```bash
 kubectl delete pod benchmark-client \
   -n "$OBS_NAMESPACE" \
   --ignore-not-found
@@ -409,7 +406,7 @@ kubectl run benchmark-client \
   -n "$OBS_NAMESPACE" \
   --image=curlimages/curl:8.10.1 \
   --restart=Never \
-  --command -- sleep 3600
+  --command -- sleep 86400
 
 kubectl wait --for=condition=Ready pod/benchmark-client \
   -n "$OBS_NAMESPACE" \
@@ -446,25 +443,48 @@ kubectl ate get actors --atespace "$OBS_ATESPACE"
 kubectl ate get workers
 ```
 
-## Step 5: Open The Live Views
+## Step 5: Generate Traffic And Watch The Live Views
 
-Use three terminals during the run.
-
-Shell exports are not shared between terminals. In terminals 2 and 3, first
-source `.ate-dev-env.sh` and rerun the export block at the start of Step 4.
-
-In terminal 1, keep the **Agent Substrate Observability** Grafana dashboard
-open with 30-second auto-refresh and a 30-minute window. The panels to narrate
-during a demo:
+Keep the **Agent Substrate Observability** Grafana dashboard open with
+30-second auto-refresh and a 30-minute window. The panels to narrate during the
+run are:
 
 - `Routing latency (wake path) p50 / p95 / p99`
 - `Envoy full request p95` — the number a client actually feels
 - `Control-plane lifecycle RPCs` and `Worker restore / checkpoint`
 - `Checkpoints completed vs snapshot files observed`
 
-In terminal 2, watch worker occupancy and optional CPU/memory usage:
+The load generator below is what populates those panels. Run it from the same
+shell where you ran the Step 4 export block so the Bash child inherits the lab
+variables.
+
+The client pod runs a finite `sleep`. Recreate it if it is no longer `Running`:
 
 ```bash
+if [ "$(kubectl get pod benchmark-client -n "$OBS_NAMESPACE" \
+    -o jsonpath='{.status.phase}' 2>/dev/null)" != "Running" ]; then
+  kubectl delete pod benchmark-client -n "$OBS_NAMESPACE" --ignore-not-found
+  kubectl run benchmark-client \
+    -n "$OBS_NAMESPACE" \
+    --image=curlimages/curl:8.10.1 \
+    --restart=Never \
+    --command -- sleep 86400
+  kubectl wait --for=condition=Ready pod/benchmark-client \
+    -n "$OBS_NAMESPACE" --timeout=2m
+fi
+```
+
+Before starting the load, **optionally** open another shell and run the watcher
+below. This shell does not inherit the Step 4 variables, so set the worker
+namespace explicitly. Leave the watcher running, then return to the Step 4
+shell to start the load generator.
+
+This is occupancy, meaning workers currently assigned to actors. It is distinct
+from CPU utilization. Stop the watcher with `Ctrl-C` after the load run.
+
+```bash
+export WORKER_NAMESPACE=ate-demo-counter
+
 while true; do
   clear
   date -u
@@ -489,35 +509,62 @@ while true; do
 done
 ```
 
-This is occupancy, meaning workers currently assigned to actors. It is distinct
-from CPU utilization. Stop the watcher with `Ctrl-C` after the load run.
-
-## Step 6: Generate Wake And Suspend Traffic
-
-The load loop sends exactly one request to each suspended actor and then
-suspends it again. Unlike the cost benchmark's wake-plus-warm pair, this keeps
-the measured route traffic focused on cold wake paths.
-
-Verify every actor is suspended before starting:
+Run the load as one Bash heredoc. Each actor is verified as suspended before
+and after its request, so every numeric sample represents a suspended wake. A
+failed request is recorded as `FAILED`; because the router may continue a
+resume for up to 15 seconds after its caller disconnects, the script waits out
+that detached operation before suspending the actor.
 
 ```bash
-kubectl ate get actors --atespace "$OBS_ATESPACE"
-```
+bash <<'BASH'
+# Do not enable `set -e`: expected command failures are handled explicitly.
+set -u
 
-New actors start suspended, and each completed load cycle below ends by
-suspending its actor. If an interrupted earlier run left an actor running,
-suspend that actor before continuing. That corrective RPC will appear in the
-lifecycle rate panels, so either account for it or wait for it to age out.
+: "${OBS_RESULTS_FILE:?run the Step 4 export block first}"
+: "${OBS_DURATION_SECONDS:?run the Step 4 export block first}"
+: "${ACTOR_COUNT:?run the Step 4 export block first}"
+: "${OBS_ACTOR_PREFIX:?run the Step 4 export block first}"
+: "${OBS_ATESPACE:?run the Step 4 export block first}"
+: "${OBS_NAMESPACE:?run the Step 4 export block first}"
+: "${SUBSTRATE_ROUTER_URL:?run the Step 4 export block first}"
 
-In terminal 3, run ten minutes of traffic:
+get_actor_status() {
+  kubectl ate get actor "$1" --atespace "$OBS_ATESPACE" 2>/dev/null |
+    awk 'NR == 2 { print $4 }'
+}
 
-```bash
-set -euo pipefail
+ensure_suspended() {
+  local actor=$1
+  local actor_status
+  local attempt
+
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    actor_status=$(get_actor_status "$actor")
+    if [ "$actor_status" = "STATUS_SUSPENDED" ]; then
+      return 0
+    fi
+    if [ "$actor_status" = "STATUS_CRASHED" ]; then
+      printf 'ERROR: %s is CRASHED and cannot be measured\n' "$actor" >&2
+      return 1
+    fi
+
+    kubectl ate suspend actor "$actor" \
+      --atespace "$OBS_ATESPACE" >/dev/null 2>&1 || true
+    sleep 3
+  done
+
+  actor_status=$(get_actor_status "$actor")
+  printf 'ERROR: %s did not reach STATUS_SUSPENDED (status=%s)\n' \
+    "$actor" "${actor_status:-unknown}" >&2
+  return 1
+}
 
 printf 'round\tactor\twake_seconds\n' > "$OBS_RESULTS_FILE"
 
 deadline=$((SECONDS + OBS_DURATION_SECONDS))
 round=0
+successful_wakes=0
+failed_wakes=0
 
 while (( SECONDS < deadline )); do
   round=$((round + 1))
@@ -530,8 +577,10 @@ while (( SECONDS < deadline )); do
     actor=$(printf '%s-%03d' "$OBS_ACTOR_PREFIX" "$i")
     actor_host="${actor}.${OBS_ATESPACE}.actors.resources.substrate.ate.dev"
 
-    # A failed wake must not abort the run (set -e) or skip the suspend —
-    # record it and keep going. --max-time bounds a hung wake.
+    if ! ensure_suspended "$actor"; then
+      exit 1
+    fi
+
     if wake_seconds=$(kubectl exec \
       -n "$OBS_NAMESPACE" benchmark-client -- \
       curl -sS --fail-with-body --max-time 60 -o /dev/null -w '%{time_total}' \
@@ -540,36 +589,24 @@ while (( SECONDS < deadline )); do
       "$SUBSTRATE_ROUTER_URL"); then
       printf '%s\t%s\t%s\n' \
         "$round" "$actor" "$wake_seconds" | tee -a "$OBS_RESULTS_FILE"
+      successful_wakes=$((successful_wakes + 1))
     else
       printf '%s\t%s\tFAILED\n' \
         "$round" "$actor" | tee -a "$OBS_RESULTS_FILE"
+      failed_wakes=$((failed_wakes + 1))
+      sleep 16
     fi
 
-    # Suspend and CONFIRM. The router finishes resumes on a detached
-    # background context (cmd/atenet/internal/router/resumer.go), so after a
-    # failed or timed-out wake, a suspend can race the still-running resume
-    # and fail — leaving the actor RUNNING and turning its next sample into a
-    # warm request instead of a suspended wake. Retry until the actor is
-    # verifiably SUSPENDED.
-    suspended=false
-    for attempt in 1 2 3 4 5; do
-      kubectl ate suspend actor "$actor" \
-        --atespace "$OBS_ATESPACE" >/dev/null 2>&1 || true
-      status=$(kubectl ate get actor "$actor" \
-        --atespace "$OBS_ATESPACE" 2>/dev/null \
-        | grep -o 'STATUS_[A-Z]*' | head -1)
-      if [ "$status" = "STATUS_SUSPENDED" ]; then
-        suspended=true
-        break
-      fi
-      sleep 3
-    done
-    if [ "$suspended" != "true" ]; then
-      printf 'WARNING: %s did not reach STATUS_SUSPENDED; its next sample will be warm, not a wake\n' \
-        "$actor" >&2
+    if ! ensure_suspended "$actor"; then
+      printf 'Aborting to prevent a warm request from entering the wake results.\n' >&2
+      exit 1
     fi
   done
 done
+
+printf 'successful_wakes=%d\nfailed_wakes=%d\n' \
+  "$successful_wakes" "$failed_wakes"
+BASH
 ```
 
 Each successful cycle should produce:
@@ -582,168 +619,6 @@ Each successful cycle should produce:
 The exact RPC counts can differ because the metrics count RPC attempts and the
 control plane may retry or handle an operation idempotently.
 
-## Step 7: Query Lifecycle Activity
-
-The dashboard covers the live view; use Prometheus's expression browser
-([http://localhost:9090](http://localhost:9090) from the Step 2 port-forward)
-for focused queries. These are the same signals the dashboard panels use.
-
-### Wake-path routing p95
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le) (
-    rate(atenet_router_route_duration_seconds_bucket{
-      actor_template_namespace="ate-demo-counter",
-      actor_template_name="counter",
-      outcome="ok"
-    }[5m])
-  )
-)
-```
-
-This value is seconds. It measures request arrival at the router through
-worker endpoint resolution, not the full HTTP request. The template labels
-scope it to the counter ActorTemplate, not the `observability` atespace, so
-other counter traffic in the cluster is included.
-
-### Actual restore p95
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le) (
-    rate(rpc_server_call_duration_seconds_bucket{
-      rpc_method="atelet.AteomHerder/Restore",
-      rpc_response_status_code="OK"
-    }[5m])
-  )
-)
-```
-
-The gRPC metric does not carry actor or ActorTemplate identity. This query
-includes all atelet restores in the cluster. Run the lab on an otherwise idle
-cluster, or treat the chart as a platform-wide signal rather than an isolated
-benchmark result.
-
-One measurement ceiling to know: the histogram's largest finite bucket is
-**10 seconds** (the default OTel gRPC boundaries). Restores slower than that
-collapse into the `+Inf` bucket, so a computed p95 saturates at 10s and can't
-distinguish an 11-second restore from a 60-second one.
-
-### Full HTTP p95
-
-```promql
-histogram_quantile(
-  0.95,
-  sum by (le) (
-    rate(envoy_http_downstream_rq_time_bucket{
-      envoy_http_conn_manager_prefix="ingress_http"
-    }[5m])
-  )
-)
-```
-
-Envoy reports this metric in **milliseconds**. The `ingress_http` filter is
-required: Envoy's admin listener records its own request stats under the
-`admin` prefix, and Prometheus's scrapes of `/stats/prometheus` would swamp
-the percentile otherwise.
-
-### Successful lifecycle RPCs in the last 15 minutes
-
-Resume requests:
-
-```promql
-sum(increase(rpc_server_call_duration_seconds_count{
-  rpc_method="ateapi.Control/ResumeActor",
-  rpc_response_status_code="OK"}[15m]))
-```
-
-Actual restores:
-
-```promql
-sum(increase(rpc_server_call_duration_seconds_count{
-  rpc_method="atelet.AteomHerder/Restore",
-  rpc_response_status_code="OK"}[15m]))
-```
-
-Suspend requests:
-
-```promql
-sum(increase(rpc_server_call_duration_seconds_count{
-  rpc_method="ateapi.Control/SuspendActor",
-  rpc_response_status_code="OK"}[15m]))
-```
-
-Actual checkpoints:
-
-```promql
-sum(increase(rpc_server_call_duration_seconds_count{
-  rpc_method="atelet.AteomHerder/Checkpoint",
-  rpc_response_status_code="OK"}[15m]))
-```
-
-`increase` can return a fractional estimate because Prometheus extrapolates
-across the selected range. The 15-minute window gives the ten-minute load run
-time to complete, but it can include unrelated lifecycle traffic from the same
-cluster.
-
-## Step 8: Compare Dashboard And Client p95
-
-First, account for failures — `FAILED` rows are excluded from the percentiles
-below, but they are not free: a failed wake whose suspend confirmation warned
-also contaminates the *next* sample for that actor (it arrives warm). Report
-the count alongside the percentiles, and treat the whole comparison as invalid
-if more than a few percent of samples failed:
-
-```bash
-failed_samples=$(awk 'NR > 1 && $3 == "FAILED"' "$OBS_RESULTS_FILE" | wc -l | tr -d ' ')
-total_samples=$(awk 'NR > 1' "$OBS_RESULTS_FILE" | wc -l | tr -d ' ')
-printf 'failed_samples=%s/%s\n' "$failed_samples" "$total_samples"
-```
-
-Calculate p50, p95, p99, and average full-request wake latency from the local
-TSV file:
-
-```bash
-awk 'NR > 1 && $3 ~ /^[0-9.]+$/ { print $3 }' "$OBS_RESULTS_FILE" | \
-  LC_ALL=C sort -n | \
-  awk '
-    { values[NR] = $1; sum += $1 }
-    END {
-      if (NR == 0) exit 1
-
-      p50 = int((NR + 1) * 0.50)
-      p95 = int((NR + 1) * 0.95)
-      p99 = int((NR + 1) * 0.99)
-
-      if (p50 < 1) p50 = 1
-      if (p95 < 1) p95 = 1
-      if (p99 < 1) p99 = 1
-      if (p50 > NR) p50 = NR
-      if (p95 > NR) p95 = NR
-      if (p99 > NR) p99 = NR
-
-      printf "samples=%d\n", NR
-      printf "client_wake_avg_seconds=%.3f\n", sum / NR
-      printf "client_wake_p50_seconds=%.3f\n", values[p50]
-      printf "client_wake_p95_seconds=%.3f\n", values[p95]
-      printf "client_wake_p99_seconds=%.3f\n", values[p99]
-    }'
-```
-
-Compare `client_wake_p95_seconds` with the dashboard carefully:
-
-- The client value is full round-trip latency measured inside the cluster.
-- Envoy full-request p95 is the closest platform-side comparison, but it is in
-  milliseconds and can include unrelated ingress traffic.
-- The dashboard panels use rolling five-minute windows, while the TSV
-  percentile covers the complete run. Compare trends and order of magnitude;
-  they are not identical aggregates.
-- Router p95 is only Substrate route and wake overhead through worker
-  resolution, so it should be lower than the client value.
-- Restore p95 isolates the worker restore stage.
 
 ## Optional: Actor-Emitted Telemetry And Traces
 

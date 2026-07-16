@@ -2,41 +2,39 @@
 title: "Agent Substrate: Multiplexing Claude Code Agents Onto Fewer Pods"
 description: >
   A hands-on lab running real Claude Code agents as Substrate actors: three
-  agents share a two-pod WorkerPool, Substrate suspends the idle one, and a
-  suspended agent resumes mid-loop with its process state intact - proving
-  you can run more agents than pods.
+  agents share a two-pod WorkerPool, an explicit suspend frees capacity for
+  the third, proving that actor count can exceed worker count.
 tags: [agent-substrate, kubernetes, actors, claude-code, suspend-resume, multiplexing, oversubscription]
 author: Michael Levan
 ---
 
 # More Agents Than Pods
 
-Tldr; Three live Claude Code agents, two worker pods. Substrate suspends
-whoever is idle and resumes them on demand - the cluster is oversubscribed
-on purpose, and nothing breaks.
+Tldr; Three Claude Code actors, two worker pods. An operator explicitly
+suspends an idle actor to free a slot for another. The cluster is
+oversubscribed on purpose, and capacity remains an honest, visible constraint.
 
-Every other lab in this repo drives the counter demo. This one runs a **real
-AI agent workload**: each actor is a container running the actual
-`@anthropic-ai/claude-code` CLI in a loop - wake, send a task to Claude,
-print the answer, idle. The idle window is exactly what Substrate exploits:
-agents spend most of their life waiting, so a 2-pod pool can serve 3 (or 30)
-of them.
+This demo runs **real AI agent workload**: each actor is a container running the actual
+`@anthropic-ai/claude-code` CLI in a loop. Wake, send a task to Claude,
+print the answer, and idle. An operator or higher-level system can use those idle
+windows to suspend actors and multiplex a smaller worker pool across them.
+Substrate provides the lifecycle and scheduling primitives; this demo drives
+the policy explicitly with `kubectl ate`.
 
-This is the upstream flagship story - the project's demo video shows ~250
-agents on 8 pods. Same pattern, demo scale:
+This exercises the same density primitive as the upstream demo, at walkthrough
+scale:
 
 1. **Density**: 3 Claude Code actors on a 2-replica `WorkerPool`. The third
    actor cannot run until a slot frees - and you'll see the honest capacity
    signal when it can't.
-2. **Mid-loop state survival**: suspend an agent between ticks, resume it,
-   and its shell loop continues at the *next* tick number - same process,
-   same memory, possibly a different pod.
+2. **Real workload**: each running actor makes genuine Claude API calls and
+   streams the results through actor logs.
 
 ## What Substrate pieces this uses
 
 | Concept | Where it lives |
 |---|---|
-| Claude Code workload | `demos/claude-code-multiplex/workload/` - a `node:20-slim` image with the Claude Code CLI and a `run.sh` loop: run `claude --print "$TASK"`, sleep `INTERVAL_SECONDS`, repeat. The tick counter in that loop is our state-survival proof. |
+| Claude Code workload | `demos/claude-code-multiplex/workload/` - a `node:20-slim` image with the Claude Code CLI and a `run.sh` loop: run `claude --print "$TASK"`, sleep `INTERVAL_SECONDS`, repeat. |
 | `WorkerPool` (2 replicas) | `claude-workerpool` in namespace `claude-multiplex-demo`, labeled `workload: claude-multiplex`. The templates bind to it via `workerSelector.matchLabels`. |
 | `ActorTemplate` x3 | `agent-luna`, `agent-mars`, `agent-orion` - same image, different `TASK` prompt. `ANTHROPIC_API_KEY` comes from a Secret via `valueFrom.secretKeyRef`. |
 | Explicit resume | These agents serve no HTTP, so there's no traffic to wake them through the `atenet-router`. Resume is `kubectl ate resume actor` (the same `Control.ResumeActor` RPC the router would call). |
@@ -57,13 +55,32 @@ agents on 8 pods. Same pattern, demo scale:
 
 | Tool | Why |
 |---|---|
-| `docker` with `buildx` | The workload is a Dockerfile image (Node + Claude Code CLI), not a Go binary - `ko` doesn't apply, so the deploy step builds and pushes it with `docker buildx`. |
+| `docker` with `buildx` | The workload is a Dockerfile image (Node + Claude Code CLI), not a Go binary - `ko` doesn't apply, so the deploy step builds and pushes it with `docker buildx`. The Docker daemon must be running. |
 | `jq` | The deploy step uses it to resolve the pushed image's sha256 digest. |
+
+Verify Docker before deploying:
+
+```bash
+docker info
+docker buildx version
+```
 
 > **This lab costs real money in two ways**: each RUNNING agent calls the
 > Anthropic API every 45 seconds, and the workload image build pushes to your
-> registry. Suspend the actors when you're not actively demoing (Step 6's
-> cleanup does this), and don't leave the demo running overnight.
+> registry. Suspend the actors when you're not actively demoing, and don't
+> leave the demo running overnight.
+
+> **Use a dedicated, short-lived Anthropic key.** The Secret is resolved into
+> the workload environment, and this demo intentionally takes full-memory
+> snapshots. The key is therefore present in golden and actor snapshots in
+> GCS. Deleting actors or Kubernetes resources does not delete those objects;
+> the Cleanup section removes the dedicated snapshot prefix separately.
+
+> **Build reproducibility:** the upstream workload Dockerfile currently
+> installs `@anthropic-ai/claude-code@latest`. The resulting image is pinned by
+> digest for one deployment, but a later rebuild may contain a different Claude
+> Code version. Pin a tested package version in the Dockerfile for repeatable
+> runs.
 
 Run everything from the root of your Substrate repo checkout, with your env
 file sourced (it carries `BUCKET_NAME` and `KO_DOCKER_REPO`, which the deploy
@@ -86,7 +103,44 @@ kubectl get pods -n ate-system
 Export your Anthropic key (`read -s` keeps it out of your shell history):
 
 ```bash
-read -s ANTHROPIC_API_KEY && export ANTHROPIC_API_KEY
+export ANTHROPIC_API_KEY=
+```
+
+ActorTemplates do not read Secrets directly. Instead, `ate-api-server` resolves the
+`secretKeyRef` values. It's `ServiceAccount` intentionally has no default
+cluster-wide Secret access. Create the namespace and grant it permission to
+read only this demo's `anthropic-api-key` Secret before deploying:
+
+```bash
+kubectl create namespace claude-multiplex-demo \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+kubectl apply -f - <<'EOF'
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: ate-api-server-env-sources
+  namespace: claude-multiplex-demo
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["anthropic-api-key"]
+  verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: ate-api-server-env-sources
+  namespace: claude-multiplex-demo
+subjects:
+- kind: ServiceAccount
+  name: ate-api-server
+  namespace: ate-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: ate-api-server-env-sources
+EOF
 ```
 
 Deploy. `BUCKET_NAME` and `KO_DOCKER_REPO` are already in your environment
@@ -102,51 +156,59 @@ manifest containing:
 
 - the `claude-multiplex-demo` namespace,
 - an `anthropic-api-key` Secret (the templates consume it via
-  `valueFrom.secretKeyRef` - your key never appears in the ActorTemplate spec),
+  `valueFrom.secretKeyRef`; the key does not appear in the public
+  ActorTemplate spec, but its resolved value is captured in full snapshots),
 - the 2-replica `WorkerPool` `claude-workerpool`,
 - three `ActorTemplate`s: `agent-luna`, `agent-mars`, `agent-orion`.
 
-Wait for the templates to build their golden snapshots (this runs each
-workload once and checkpoints it - expect a few minutes and a few log lines
-of Claude output in the bucket-bound snapshot run):
+Ensure the resources were created:
+
+```bash
+kubectl get actortemplate,workerpool -n claude-multiplex-demo
+```
+
+Wait for all three templates to finish their golden snapshots before creating
+actors:
 
 ```bash
 kubectl wait --for=condition=Ready \
-  actortemplate/agent-luna actortemplate/agent-mars actortemplate/agent-orion \
-  -n claude-multiplex-demo --timeout=10m
+  actortemplates.ate.dev/agent-luna \
+  actortemplates.ate.dev/agent-mars \
+  actortemplates.ate.dev/agent-orion \
+  -n claude-multiplex-demo \
+  --timeout=10m
 ```
 
-And confirm the two worker pods are up:
-
-```bash
-kubectl get workerpool,pods -n claude-multiplex-demo
-```
-
-Two pods. That number does not change for the rest of the lab - hold that
-thought.
+You see two Pods because the goal is to see multiple Agents across only two
+Workers (Pods).
 
 ---
 
 ## Step 2 - Create three agents
 
-Actors live in an atespace (the tenancy boundary - see the
-[multi-tenancy lab](../isolation/session-identity-multi-tenancy.md)). Create
-one for the demo, then one actor per template:
+Actors live in an atespace (the tenancy boundary; see the
+[multi-tenancy lab](../isolation/session-identity-multi-tenancy.md)).
+
+Create one for the demo, then one actor per template:
 
 ```bash
 kubectl ate create atespace agents
+```
 
+```bash
 kubectl ate create actor luna  --template claude-multiplex-demo/agent-luna  --atespace agents
 kubectl ate create actor mars  --template claude-multiplex-demo/agent-mars  --atespace agents
 kubectl ate create actor orion --template claude-multiplex-demo/agent-orion --atespace agents
+```
 
+```bash
 kubectl ate get actors --atespace agents
 ```
 
 All three show `STATUS_SUSPENDED` with no `ATEOM POD`. **Three agents exist
-and consume zero pods.** That's the resting state of a Substrate fleet - and
-at this point the pattern already scales in your head: 300 suspended agents
-would also consume zero pods.
+and hold zero worker assignments.** The two WorkerPool pods remain running and
+ready; suspended actors consume none of those slots. The same pool could hold
+records and snapshots for many more suspended actors.
 
 ---
 
@@ -162,31 +224,30 @@ kubectl ate get actors --atespace agents
 ```
 
 `luna` and `mars` go `STATUS_RESUMING` → `STATUS_RUNNING`, each bound to a
-different worker in the `ATEOM POD` column. Now stream an agent's logs and
-watch it work:
+different worker in the `ATEOM POD` column. Stream **Mars's** logs because Mars
+is the actor Step 4 will suspend:
 
 ```bash
-kubectl ate logs actor luna --atespace agents -f
+kubectl ate logs actor mars --atespace agents -f
 ```
 
-You'll see the loop ticking:
+`kubectl ate logs` preserves the structured log envelope, so each workload line
+appears as JSON with `time` and `message` fields. You'll see the loop ticking:
 
 ```
-[demo-actor:luna] === tick 3 at 14:22:07Z ===
-[demo-actor:luna] running: Tell me one short, surprising fact about the Moon. One sentence.
----
-The Moon is moving away from Earth at about 3.8 centimeters per year...
----
-[demo-actor:luna] tick 3 done; sleeping 45s
+{"time":"2026-07-16T14:22:07Z","message":"[demo-actor:mars] === tick 3 at 14:22:07Z ==="}
+{"time":"2026-07-16T14:22:07Z","message":"[demo-actor:mars] running: Give me one concise tip for learning a new programming language. One sentence."}
+{"time":"2026-07-16T14:22:09Z","message":"Build one small project immediately and learn concepts as you need them."}
+{"time":"2026-07-16T14:22:09Z","message":"[demo-actor:mars] tick 3 done; sleeping 45s"}
 ```
 
-That's a genuine Claude API round-trip from inside a gVisor-sandboxed actor.
-**Note the current tick number** - you'll use it in Step 5.
+That's a genuine one-shot Claude API round-trip from inside a gVisor-sandboxed
+actor. Press `Ctrl-C` after you see a completed tick.
 
 > Don't expect the ticks to start at 1. The golden snapshot was captured
 > after the workload had already started (that's the point - actors hydrate
 > from a warm checkpoint, not a cold boot), so the loop resumes wherever the
-> snapshot left it. `Ctrl-C` the log stream when you've noted the tick.
+> snapshot left it.
 
 ---
 
@@ -207,8 +268,8 @@ holding the slots:
 kubectl ate get workers
 ```
 
-Both workers show an assigned actor. Now do what Substrate does on idle -
-free a slot - and retry:
+Both workers show an assigned actor. Apply the multiplexing policy explicitly:
+suspend Mars to free a slot, then retry Orion:
 
 ```bash
 kubectl ate suspend actor mars --atespace agents
@@ -218,57 +279,29 @@ kubectl ate get actors --atespace agents
 ```
 
 `orion` is `STATUS_RUNNING`, `mars` is `STATUS_SUSPENDED` (checkpointed to
-the bucket, slot released). Three agents have all done real work; at no point
-did a third pod exist.
-
-> **Idle-suspension does this for you in steady state.** Substrate
-> automatically suspends actors after a quiet window, so a fleet of looping
-> agents self-rotates through the pool - that's the rotation the upstream
-> demo video shows. In a live walkthrough the manual suspend is the reliable
-> path (you control the timing); if you wait a few minutes instead, you may
-> see actors flip to `STATUS_SUSPENDED` on their own. Same end state.
-
----
-
-## Step 5 - Resume mid-loop: the process picks up where it left off
-
-`mars` was suspended in the middle of its infinite loop. Because this
-template snapshots **full state** (no `onPause`/`onCommit` tiering), that
-checkpoint includes the process's memory - the shell loop's `TICK` variable
-included.
-
-Note the last tick `mars` printed before the suspend, then wake it:
+the bucket, slot released). Wait for Orion to complete at least one Claude call
+before moving on:
 
 ```bash
-kubectl ate suspend actor orion --atespace agents   # free a slot first
-kubectl ate resume actor mars --atespace agents
-kubectl ate logs actor mars --atespace agents -f
+kubectl ate logs actor orion --atespace agents -f
 ```
 
-Read the log stream against what you noted:
+After you see `tick ... done`, press `Ctrl-C`. All three agents have now done
+real work; at no point did a third worker pod exist.
 
-- **The tick number continues** - if it was at tick 6 before suspend, the
-  next line is tick 7. The loop did not restart.
-- **No new startup banner** - `[demo-actor:mars] starting; task=...` appears
-  only when the process boots. Its absence means this is the *same process*,
-  thawed, not a replacement.
-- **Check `ATEOM POD`** (`kubectl ate get actors --atespace agents`) - the
-  actor may have landed on a different worker than before. The bash loop,
-  mid-`sleep`, moved pods and never noticed.
-
-This is the difference between Substrate and a scale-to-zero autoscaler: a
-Deployment scaled back up starts a *new* container from scratch. Substrate
-resumed a *checkpointed process* - for a real coding agent, that's an
-in-flight session, loaded context, and working memory surviving the trip
-through object storage.
+> Substrate does not infer idleness from the workload's `sleep`. Production
+> rotation requires the actor, an operator, or a higher-level policy system to
+> call `SuspendActor`. This walkthrough uses explicit CLI calls so the policy
+> boundary is visible.
 
 ---
 
-## Step 6 - Optional: the dashboard
+## Step 5 - Optional: the dashboard
 
 The demo ships a small Go dashboard that renders workers, actors, and pod
-logs from the `ateapi` gRPC service. In one terminal, port-forward the API;
-in another, run the UI:
+logs from the `ateapi` gRPC service. Treat it as an observational stage aid,
+not as the lifecycle driver for this walkthrough. In one terminal,
+port-forward the API; in another, run the UI:
 
 ```bash
 # Terminal 1
@@ -283,25 +316,29 @@ Open `http://localhost:8090`. The pods and agents panels are live cluster
 state (via `ListWorkers` / `ListActors`); the logs pane reads real pod logs
 via `client-go`.
 
-> **Honesty note for the stage:** the "Give a task" button's
-> queued → running → completed badges are client-side timers in the UI, not
-> Substrate task states (Substrate has no per-task concept - see
-> `ui/server.go`'s `computeState`). Use the badges as narrative, but point
-> the audience at the actor status column and the logs pane for the real
-> signals.
+> **Honesty note for the stage:** the "Give a task" button does not invoke
+> Claude or call a Substrate lifecycle API. Its queued → running → completed
+> badges are client-side timers (see `ui/server.go`'s `computeState`). Point
+> the audience at the actor status column and logs pane for real signals.
+>
+> The current UI also has incomplete scoping: task selection calls unscoped
+> `ListActors`, the actor panel can include the three `ate-golden` actors, and
+> unassigned workers from other pools can appear. Use it on an otherwise clean
+> demo cluster and cross-check `kubectl ate get actors --atespace agents` and
+> `kubectl ate get workers` before making density claims.
 
 ---
 
 ## Cleanup
 
-Actors must be suspended before deletion; suspends of already-suspended
-actors return immediately, so this is safe to run as-is:
+Suspend and delete the three demo actors:
 
 ```bash
 for a in luna mars orion; do
-  kubectl ate suspend actor "$a" --atespace agents 2>/dev/null
-  kubectl ate delete actor "$a" --atespace agents
+  kubectl ate suspend actor "$a" --atespace agents 2>/dev/null || true
+  kubectl ate delete actor "$a" --atespace agents || true
 done
+kubectl ate get actors --atespace agents
 kubectl ate delete atespace agents
 ```
 
@@ -311,10 +348,21 @@ Remove the demo resources (namespace, Secret, WorkerPool, templates):
 ./hack/install-ate.sh --delete-demo-claude-code-multiplex
 ```
 
-The Substrate control plane and cluster are untouched - tear those down via
-the main [setup lab](../setup.md) if you're done with them. The workload
-image remains in your registry; delete it there if you want it gone. Unset
-the key from your shell when finished: `unset ANTHROPIC_API_KEY`.
+Kubernetes and Actor deletion do **not** remove object-store snapshots. If the
+prefix is dedicated to this demo, delete its golden and actor snapshots so the
+captured Anthropic key is not retained:
+
+```bash
+gcloud storage rm --recursive \
+  "gs://${BUCKET_NAME}/claude-multiplex-demo/"
+```
+
+Verify `BUCKET_NAME` carefully before running that destructive command. The
+Substrate control plane and cluster are untouched - tear those down via the
+main [setup lab](../setup.md) if you're done with them. The workload image
+remains in your registry; delete it there if you want it gone. Unset the key
+from your shell and revoke the dedicated key in Anthropic when finished:
+`unset ANTHROPIC_API_KEY`.
 
 ---
 
@@ -326,34 +374,14 @@ the key from your shell when finished: `unset ANTHROPIC_API_KEY`.
 - **Deploy fails asking for `ANTHROPIC_API_KEY` / `BUCKET_NAME` /
   `KO_DOCKER_REPO`** - the install script hard-requires all three in the
   environment. Re-source `.ate-dev-env.sh` and re-export the key.
+- **`Docker is not reachable` / `docker.sock: connect: no such file or
+  directory`** - the Docker client is installed but its daemon is not running.
+  Start Docker Desktop (or your alternative daemon), wait until it is ready,
+  and confirm `docker info` succeeds before rerunning the deploy.
 - **`docker buildx` push fails** - your Docker credential helper isn't
   configured for the registry. Re-run
   `gcloud auth configure-docker gcr.io` (or your Artifact Registry host).
-- **Templates never go `Ready`** - same failure modes as the counter demo:
-  check `kubectl describe actortemplate -n claude-multiplex-demo` and the
-  `atelet` logs; usually bucket IAM or image pull (see the main lab's
-  [troubleshooting](../setup.md#troubleshooting)).
-- **Agent logs show Claude auth errors** - the key in the `anthropic-api-key`
-  Secret is wrong or was exported with whitespace. Fix the export and
-  re-run the deploy (it re-renders the Secret).
-- **Logs are empty right after resume** - `kubectl ate logs` reads the
-  current worker pod's logs; give the freshly resumed actor a few seconds to
-  produce its first post-thaw tick.
-- **Upstream context** - this demo carries runtime workarounds for two open
-  Substrate issues (`#189` atelet OCI bundle gaps, `#197` symlink
-  resolution); see `demos/claude-code-multiplex/README.md` if behavior looks
-  odd after an upstream update.
-
----
-
-## Recap
-
-| Beat | What was proven |
-|---|---|
-| 3 actors created, 0 pods consumed | Suspended agents are free: they exist as records + snapshots, not containers. |
-| 3 agents did real Claude work on 2 pods | Oversubscription works because agents are idle most of the time - the pool serves whoever is awake. |
-| Third resume refused, then succeeded after a suspend | Capacity is an honest, visible signal - and freeing a slot is exactly what idle-suspension automates. |
-| Tick counter continued across suspend/resume | Full-state checkpointing froze and thawed a live process - memory, loop variable, and all - possibly onto a different pod. |
-
-The talk line: **"Two pods. Three agents. Nobody noticed - least of all the
-agents."**
+- **Golden actors fail with `secrets "anthropic-api-key" is forbidden`** -
+  ate-api-server needs the namespace-scoped `ate-api-server-env-sources`
+  RoleBinding to resolve `secretKeyRef`. Apply the Role and RoleBinding YAML
+  from Step 1 if either resource is missing.

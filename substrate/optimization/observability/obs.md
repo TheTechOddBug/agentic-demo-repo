@@ -142,11 +142,6 @@ helm upgrade --install monitoring \
   --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false
 ```
 
-The chart version is pinned because this lab depends on chart-generated
-service names, the Grafana dashboard sidecar defaults, and the `PodMonitor`
-CRD's `portNumber` field. Tested with chart `87.16.1` (prometheus-operator
-v0.92.1, Grafana datasource UID `prometheus`) on Kubernetes 1.35.
-
 Verify the stack is healthy:
 
 ```bash

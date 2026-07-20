@@ -1,4 +1,6 @@
-## Setup
+## Env Setup
+
+### Gateway
 
 ```
 export ANTHROPIC_API_KEY=
@@ -37,7 +39,7 @@ kubectl apply -f - <<EOF
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: mcp-gateway
+  name: mcp-gateway-sec
   namespace: agentgateway-system
 spec:
   gatewayClassName: enterprise-agentgateway
@@ -77,8 +79,8 @@ EOF
 
 ```
 kubectl apply -f - <<EOF
-apiVersion: agentgateway.dev/v1alpha1
-kind: AgentgatewayBackend
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayBackend
 metadata:
   name: anthropic
   namespace: agentgateway-system
@@ -86,7 +88,7 @@ spec:
   ai:
     provider:
       anthropic:
-        model: "claude-sonnet-4-6"
+        model: "claude-sonnet-6"
   policies:
     ai:
     auth:
@@ -104,7 +106,7 @@ metadata:
   namespace: agentgateway-system
 spec:
   parentRefs:
-    - name: mcp-gateway
+    - name: mcp-gateway-sec
   rules:
     - matches:
         - path:
@@ -119,8 +121,8 @@ spec:
       backendRefs:
         - name: anthropic
           namespace: agentgateway-system
-          group: agentgateway.dev
-          kind: AgentgatewayBackend
+          group: enterpriseagentgateway.solo.io
+          kind: EnterpriseAgentgatewayBackend
     - matches:
         - path:
             type: PathPrefix
@@ -218,6 +220,55 @@ curl "http://$GATEWAY_IP:3000/anthropic" \
 Open MCP Inspector
 ```
 npx modelcontextprotocol/inspector#0.18.0
+```
+
+### Agent
+
+## Traffic Through Agentgateway From Kagent
+
+```
+kubectl apply -f - <<EOF
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: anthropic-model-config
+  namespace: kagent
+spec:
+  apiKeySecret: anthropic-secret
+  apiKeySecretKey: Authorization
+  model: your_model
+  provider: OpenAI
+  openAI:
+    baseUrl: http://$YOUR_GATEWAY$:8080/anthropic
+EOF
+```
+
+```
+kubectl apply -f - <<EOF
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: mcpsec-testing
+  namespace: kagent
+spec:
+  description: This agent can use a single tool to expand it's Kubernetes knowledge for troubleshooting and deployment
+  type: Declarative
+  declarative:
+    modelConfig: anthropic-model-config
+    systemMessage: |-
+      You're a friendly and helpful agent that uses the Kubernetes tool to help troubleshooting and deploy environments
+  
+      # Instructions
+  
+      - If user question is unclear, ask for clarification before running any tools
+      - Always be helpful and friendly
+      - If you don't know how to answer the question DO NOT make things up
+        respond with "Sorry, I don't know how to answer that" and ask the user to further clarify the question
+  
+      # Response format
+      - ALWAYS format your response as Markdown
+      - Your response will include a summary of actions you took and an explanation of the result
+EOF
 ```
 
 ## Demo
@@ -445,6 +496,102 @@ spec:
 EOF
 ```
 
+### Agentgateway Traffic Policy/Rate Limiting
+
+1. Create a rate limit rule that targets the `HTTPRoute` you just created
+```
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: traffic-policy
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+  - group: gateway.networking.k8s.io
+    kind: HTTPRoute
+    name: mcp-route
+  traffic:
+    rateLimit:
+      local:
+        - requests: 1
+          unit: Minutes
+EOF
+```
+
+
+2. Capture the LB IP of the service to test again
+```
+export GATEWAY_IP=$(kubectl get svc mcp-gateway -n agentgateway-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+echo $GATEWAY_IP
+```
+
+3. Test the LLM connectivity
+```
+curl -v "http://$GATEWAY_IP:3000/anthropic" \
+  -H "content-type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "system": "credit card person.",
+    "messages": [
+      {
+        "role": "user",
+        "content": "What is a credit card"
+      }
+    ]
+  }' | jq
+```
+
+10. Run the `curl` again
+
+You'll see a `curl` error that looks something like this:
+
+```
+< x-ratelimit-limit: 1
+< x-ratelimit-remaining: 0
+< x-ratelimit-reset: 76
+< content-length: 19
+< date: Tue, 18 Nov 2025 15:35:45 GMT
+```
+
+### Elicitation
+
+MCP Elicitation is a human-in-the-loop feature that allows servers to dynamically pause tool execution and ask the user for missing parameters, clarification, or additional context.
+
+
+
+### Guardrails
+
+MCP guardrails (also called ExtMCP) to apply external authorization and external processing to MCP requests.
+
+### Agent Identity
+
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: github-mcp-rbac
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayBackend
+      name: github-mcp-server
+  backend:
+    mcp:
+      authorization:
+        action: Allow
+        policy:
+          matchExpressions:
+            # Read-only persona — search/get/list + dedicated *_read tools
+            - 'request.headers["x-agent-name"] == "mcpsec-testing" && (mcp.tool.name.startsWith("search_") || mcp.tool.name.startsWith("get_") || mcp.tool.name.startsWith("list_") || mcp.tool.name in ["issue_read", "pull_request_read"])'
+            # Full persona — everything EXCEPT destructive/admin tools
+            #- 'request.headers["x-agent-name"] == "mcpsec-testing" && !(mcp.tool.name in ["merge_pull_request", "delete_file", "run_secret_scanning"])'
+EOF
+```
+
 ### Progressive Disclosure
 
 1. Apply the following with progressive disclosure enabled.
@@ -512,63 +659,7 @@ spec:
 EOF
 ```
 
-### Agentgateway Traffic Policy
-
-1. Create a rate limit rule that targets the `HTTPRoute` you just created
-```
-kubectl apply -f - <<EOF
-apiVersion: enterpriseagentgateway.solo.io/v1alpha1
-kind: EnterpriseAgentgatewayPolicy
-metadata:
-  name: traffic-policy
-  namespace: agentgateway-system
-spec:
-  targetRefs:
-  - group: gateway.networking.k8s.io
-    kind: HTTPRoute
-    name: mcp-route
-  traffic:
-    rateLimit:
-      local:
-        - requests: 1
-          unit: Minutes
-EOF
-```
-
-
-2. Capture the LB IP of the service to test again
-```
-export GATEWAY_IP=$(kubectl get svc mcp-gateway -n agentgateway-system -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-echo $GATEWAY_IP
-```
-
-3. Test the LLM connectivity
-```
-curl -v "http://$GATEWAY_IP:3000/anthropic" \
-  -H "content-type: application/json" \
-  -H "anthropic-version: 2023-06-01" \
-  -d '{
-    "system": "credit card person.",
-    "messages": [
-      {
-        "role": "user",
-        "content": "What is a credit card"
-      }
-    ]
-  }' | jq
-```
-
-10. Run the `curl` again
-
-You'll see a `curl` error that looks something like this:
-
-```
-< x-ratelimit-limit: 1
-< x-ratelimit-remaining: 0
-< x-ratelimit-reset: 76
-< content-length: 19
-< date: Tue, 18 Nov 2025 15:35:45 GMT
-```
+With at least one `Allow` rule present, the policy is deny-by-default, so any request whose `X-Agent-Name` doesn't match a rule sees zero tools and gets zero authorizations.
 
 And if you check the agentgateway Pod logs, you'll see the rate limit error.
 

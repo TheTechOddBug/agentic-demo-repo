@@ -1,5 +1,7 @@
 ## Env Setup
 
+Below is the Gateway and MCP configuration that you can use to get this up and running.
+
 ### Gateway
 
 ```
@@ -558,14 +560,220 @@ You'll see a `curl` error that looks something like this:
 
 MCP Elicitation is a human-in-the-loop feature that allows servers to dynamically pause tool execution and ask the user for missing parameters, clarification, or additional context.
 
+Create or update the GitHub App used for OAuth elicitation:
 
+1. In GitHub, open your profile menu and select **Settings**.
+2. Select **Developer settings**, then **GitHub Apps**.
+3. Select an existing app or click **New GitHub App**.
+4. Set the homepage URL to `https://34.74.210.205/age/`.
+5. Set the callback URL to `https://34.74.210.205/age/elicitations`.
+6. Under **Webhook**, clear **Active**. OAuth elicitation does not require a webhook.
+7. Click **Create GitHub App**. Client credentials are not shown until the app is created.
+8. On the app's **General** settings page, copy the **Client ID**.
+9. In the **Client secrets** section, click **Generate a new client secret**. Do not use a private key; private keys are for GitHub App JWT authentication, not this OAuth flow.
+10. Copy the client secret immediately. GitHub displays it only once.
+
+```bash
+export GITHUB_CLIENT_ID=
+export GITHUB_CLIENT_SECRET=
+```
+
+```bash
+kubectl create secret generic elicitation-oidc -n agentgateway-system \
+ --from-literal=type=oauth \
+ --from-literal=title="GitHub" \
+ --from-literal=instructions="## Authorize GitHub Access\n\nThis service needs access to your GitHub account to list repositories and manage pull requests on your behalf.\n\nClick **Authorize** to be redirected to GitHub to complete the OAuth flow." \
+ --from-literal=client_id=${GITHUB_CLIENT_ID} \
+ --from-literal=client_secret=${GITHUB_CLIENT_SECRET} \
+ --from-literal=app_id=github \
+ --from-literal=authorize_url=https://github.com/login/oauth/authorize \
+ --from-literal=access_token_url=https://github.com/login/oauth/access_token \
+ --from-literal=scopes=read:user \
+ --from-literal=redirect_uri=https://34.74.210.205/age/elicitations \
+ --dry-run=client -o yaml | kubectl apply -f -
+```
+
+```bash
+helm upgrade --install agentgateway \
+  oci://us-docker.pkg.dev/solo-public/enterprise-agentgateway/charts/enterprise-agentgateway \
+  --namespace agentgateway-system \
+  --version v2026.7.0 \
+  --reuse-values \
+  --set tokenExchange.elicitation.secretName=elicitation-oidc \
+  --set tokenExchange.apiValidator.validatorType=remote \
+  --set-string tokenExchange.apiValidator.remoteConfig.url=https://login.microsoftonline.com/5e7d8166-7876-4755-a1a4-b476d4a344f6/discovery/v2.0/keys \
+  --set tokenExchange.maintenance.enabled=true \
+  --set-string controller.extraEnv.CALLBACK_URL=https://34.74.210.205/age/elicitations
+```
+
+This upgrades my existing agw control plane. If you don't already have a gateway for your traffic, follow [these docs](https://docs.solo.io/agentgateway/latest/mcp/token-exchange/elicitations/setup/#step-5-configure-the-proxy-for-token-exchange)
+
+Those `env` variables below enable the `mcp-gateway` proxy (or whatever you decide to call your MCP gateway) to call the elicitation-aware STS endpoint:
+
+- `STS_URI`: where token exchange and elicitation requests go.
+- `STS_AUTH_TOKEN`: gateway service-account token used to authenticate to STS.
+
+They enable the capability on the MCP gateway, but do not activate elicitation by themselves. The backend policy determines which traffic uses it.
+
+```yaml
+kubectl apply -f - <<'EOF'
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayParameters
+metadata:
+  name: mcp-gateway-elicitations
+  namespace: agentgateway-system
+spec:
+  env:
+    - name: STS_URI
+      value: http://enterprise-agentgateway.agentgateway-system.svc.cluster.local:7777/elicitations/oauth2/token
+    - name: STS_AUTH_TOKEN
+      value: /var/run/secrets/xds-tokens/xds-token
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: mcp-gateway
+  namespace: agentgateway-system
+  labels:
+    app: github-mcp-server
+spec:
+  gatewayClassName: enterprise-agentgateway
+  infrastructure:
+    parametersRef:
+      group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayParameters
+      name: mcp-gateway-elicitations
+  listeners:
+    - name: mcp
+      port: 3000
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: Same
+EOF
+```
+
+The Elicitation policy targets only:
+
+```
+kind: EnterpriseAgentgatewayBackend
+name: github-mcp-server
+```
+
+Therefore:
+- Every request to github-mcp-server uses elicitation.
+- Other MCP backends on mcp-gateway are unaffected.
+- The gateway-level STS_URI only enables token-exchange capability; it does not force every backend to use it.
+- Elicitation becomes broader only if you attach a policy to additional backends, routes, or the Gateway itself.
+
+```yaml
+kubectl apply -f - <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: github-mcp-elicitation
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayBackend
+      name: github-mcp-server
+  backend:
+    tokenExchange:
+      elicitation:
+        secretName: elicitation-oidc
+EOF
+```
+
+Remove the static GitHub PAT authentication so the backend uses per-user OAuth elicitation instead.
+
+```bash
+kubectl patch enterpriseagentgatewaybackend github-mcp-server \
+  -n agentgateway-system \
+  --type=json \
+  -p='[{"op":"remove","path":"/spec/entMcp/targets/0/static/policies/auth"}]'
+```
+
+```bash
+kubectl rollout status deployment/enterprise-agentgateway -n agentgateway-system --timeout=60s
+```
+
+#### Test Elicitation
+
+1. Clear previous ephemeral tokens:
+```
+kubectl rollout status deployment/enterprise-agentgateway \
+  -n agentgateway-system --timeout=60s
+```
+
+2. Open the elicitation view:
+https://34.74.210.205/age/elicitations
+
+
+3. Open kagent:
+https://34.74.210.205/ke/
+
+
+4. Ask obo-readonly-agent:
+`Use the GitHub MCP get_me tool to show my GitHub identity.`
+
+5. The call should create a pending elicitation. Refresh /age/elicitations.
+
+6. Click Authorize, complete GitHub consent, and return to the UI.
+
+7. Retry the same prompt. It should now return the GitHub identity without another approval.
+
+This requires the elicitation policy to be active and the static github-pat authentication removed. The controller restart makes the demo repeatable because your current token storage is ephemeral.
+
+8. Restart the Gateway so you can reate a new pending elicitation if you want to show the process again
+
+```
+kubectl rollout restart deployment/enterprise-agentgateway \
+  -n agentgateway-system
+```
 
 ### Guardrails
 
 MCP guardrails (also called ExtMCP) to apply external authorization and external processing to MCP requests.
 
+Agentgateway supports both calling out to an external gRPC server so that you can centralize authorization and requesting or response mutation outside the proxy. However, these integrations operate on raw HTTP. To make a decision about an MCP tool call, the external server must reassemble the HTTP body, parse the JSON-RPC envelope, and handle MCP framing itself. MCP guardrails solve this challenge by calling out at the MCP method layer instead of the HTTP layer.
+
+```
+kubectl apply -f- <<EOF
+apiVersion: enterpriseagentgateway.solo.io/v1alpha1
+kind: EnterpriseAgentgatewayPolicy
+metadata:
+  name: mcp-guardrails
+spec:
+  targetRefs:
+    - group: enterpriseagentgateway.solo.io
+      kind: EnterpriseAgentgatewayBackend
+      name: github-mcp-server
+  backend:
+    mcp:
+      guardrails:
+        processors:
+        - remote:
+            backendRef:
+              name: ext-mcp
+              port: 4445
+            failureMode: FailClosed
+          methods:
+            tools/call: Request
+            tools/list: Response
+EOF
+```
+
+The MCP methods to route through the policy server, and the phase for each.
+
+- tools/call: Request sends each tool call to the server before it reaches the MCP backend, so the server can allow, mutate, or deny the call.
+- tools/list: Response sends the tool listing to the server after the backend returns it, so the server can filter or annotate the list.
+
+The `failureMode: FailClosed` Deny requests if the policy server is unreachable or returns an error. To allow requests instead, set `FailOpen`.
+
 ### Agent Identity
 
+In the example below, you will see a policy that targets your enterprise agentgateway backend with the github copilot mcp server. Then, within `cel` expressions, you can match the expression to be your agent ID/identity and the target, along with whether or not it can access the target or not. Below the example is an agent named `mcpsec-testing` can only use MCP Server tools that start with `search_`, `get_`, or `list_`.
 
 ```yaml
 kubectl apply -f - <<EOF
